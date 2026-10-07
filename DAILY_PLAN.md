@@ -37,10 +37,12 @@
 
 ---
 
-## 15 天总览
+## 16 天总览（含 M1 补课）
 
 | 天 | 里程碑 | 主题 | 交付 | 预计 |
 |----|--------|------|------|------|
+| **M1** | — | **骨架（⚠️ AI 代写）** | core / llm / tools / tests | ✅ 已完成 |
+| **P00** | M1 补课 | **重写核心，把 M1 变成你自己的** | 你重写 `core/tool.py` `core/agent.py` | 4h |
 | P01 | M2 记忆 | 事件总线 hooks | `core/hooks.py` | 3h |
 | P02 | M2 | 上下文截断 | `core/context.py::truncate` | 3h |
 | P03 | M2 | 摘要压缩 | `core/context.py::summarize` | 4h |
@@ -56,6 +58,54 @@
 | P13 | M6 | 扩用例 + 调优 | `eval/report.md` | 3h |
 | P14 | M7 编排 | 多智能体 orchestrator | `multiagent/orchestrator.py` | 4h |
 | P15 | 收尾 | README + 面试演练 | `README.md` | 3h |
+
+---
+
+# M1 · 骨架（已完成 · ⚠️ AI 代写）
+
+## Day M1 — 已交付内容（你还没读）
+
+> 这部分是我写的，不是你写的。**它是参考实现，不是你的成果。**
+
+| 文件 | 内容 | 行数 |
+|------|------|------|
+| `core/message.py` | Message / FunctionCall | 64 |
+| **`core/tool.py`** | ★ 两级注册表：`TOOL_REGISTRY` + `@tool` + `BaseTool` | 79 |
+| **`core/agent.py`** | ★ 主循环 `Agent.run()` | 97 |
+| `llm.py` | LLM 适配器（包装 qwen-agent） | 56 |
+| `tools/data_tools.py` | list_tables / sql_query | 87 |
+| `tests/test_m1_offline.py` | 假 LLM 离线测试（全绿） | 105 |
+
+**M1 导读（只要记住这两个文件是核心）**：
+- `core/tool.py` —— 全局 `TOOL_REGISTRY` 存「类」，`Agent.tool_map` 存「实例」；`@tool` 负责第一级注册。
+- `core/agent.py` —— `run()` 就是 think→act→observe 循环。
+
+---
+
+## Day P00 — M1 补课：把 AI 写的变成你自己的
+
+> M1 · 预计 4h · **整个计划里最重要的一天**
+
+**目标**：M1 是我写的，你不读就等于没有。今天把它变成你的。
+
+**任务（按顺序）**：
+
+1. **读**（1h）：按 `core/tool.py` → `core/agent.py` → `llm.py` 顺序读。每读完一个文件，**合上**，用自己的话写下「它干了什么、为什么这么设计」。
+2. **重写**（2.5h）：**关掉原文件**，照着 `README.md` + 上面的导读，从零重写：
+   - `core/tool.py`（两级注册表 + `@tool` + `BaseTool`）
+   - `core/agent.py`（主循环）
+3. **验证**（0.5h）：用我写的 `tests/test_m1_offline.py` 验证你的重写（**测试文件不许改**）。
+4. **复述**：脱稿讲清「为什么注册要分两级」。
+
+**我给**：只在你卡住 ≥30 分钟后给提示；最后 review 你的重写，和原版逐行对比。
+
+**验收**：
+- [ ] 你重写的 `tool.py` / `agent.py` 能通过 `tests/test_m1_offline.py`
+- [ ] 能脱稿解释两级注册表（类 vs 实例）
+- [ ] 能脱稿画出主循环
+
+**规则**：重写时允许看 `README.md`（那是 spec），**不允许看原 `tool.py` / `agent.py`**。
+区别就在这——spec 可以看，代码必须自己写。
 
 ---
 
@@ -488,6 +538,8 @@ class Orchestrator:
 
 ## 进度追踪
 
+- [x] M1 骨架（AI 代写）
+- [ ] **P00 M1 补课（重写核心）** ← 最重要
 - [ ] P01 hooks
 - [ ] P02 truncate
 - [ ] P03 summarize
