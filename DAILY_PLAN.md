@@ -90,10 +90,12 @@
 
 **任务（按顺序）**：
 
-1. **读**（1h）：按 `core/tool.py` → `core/agent.py` → `llm.py` 顺序读。每读完一个文件，**合上**，用自己的话写下「它干了什么、为什么这么设计」。
+1. **读**（1h）：按依赖自底向上读 —— `core/message.py` → `core/tool.py` → `llm.py` → `core/agent.py`。每读完一个文件，**合上**，用自己的话写下「它干了什么、为什么这么设计」。
+   （`message.py` 和 `tool.py` 都是零依赖，顺序随意；`agent.py` 依赖前两者、并且调 `llm.chat()`，**必须最后读**。）
 2. **重写**（2.5h）：**关掉原文件**，照着 `README.md` + 上面的导读，从零重写：
    - `core/tool.py`（两级注册表 + `@tool` + `BaseTool`）
    - `core/agent.py`（主循环）
+   （`message.py` 是纯 dataclass，读一遍即可，不必重写。）
 3. **验证**（0.5h）：用我写的 `tests/test_m1_offline.py` 验证你的重写（**测试文件不许改**）。
 4. **复述**：脱稿讲清「为什么注册要分两级」。
 
