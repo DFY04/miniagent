@@ -11,15 +11,14 @@ from __future__ import annotations
 from typing import List, Optional
 
 from qwen_agent.llm import get_chat_model
+from qwen_agent.llm.schema import FunctionCall as QFunctionCall
+from qwen_agent.llm.schema import Message as QMessage
 
 from miniagent.core.message import FunctionCall, Message
 
 
 # ---------------- 格式转换 ----------------
 def _to_qwen(m: Message):
-    from qwen_agent.llm.schema import FunctionCall as QFunctionCall
-    from qwen_agent.llm.schema import Message as QMessage
-
     fc = None
     if m.function_call:
         fc = QFunctionCall(name=m.function_call.name, arguments=m.function_call.arguments)
@@ -46,7 +45,9 @@ class LLMClient:
 
     def chat(self, messages: List[Message], tools: Optional[List[dict]] = None) -> Message:
         qwen_messages = [_to_qwen(m) for m in messages]
-        functions = tools or None  # 空列表要转成 None，否则 qwen-agent 会误判为 fncall 模式
+        # qwen-agent 里全用真值判断（`if functions:`），所以空列表 [] 和 None 等价；
+        # 这里显式转 None，只是让「没有工具」的意图更清楚。
+        functions = tools or None
 
         last = None
         for chunk in self.model.chat(messages=qwen_messages, functions=functions, stream=True):
