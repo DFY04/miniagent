@@ -1,12 +1,19 @@
 """M1 离线测试：用「假 LLM」验证 harness 主循环，不需要网络 / API key。
 
-跑法（在 qwen-agent 仓库根目录下）：
+两种跑法都行：
+
+    # 1) pytest（PyCharm 里点绿三角 / 命令行）
+    .venv\\Scripts\\python.exe -m pytest miniagent/tests/test_m1_offline.py -v
+
+    # 2) 当普通脚本跑（不需要 pytest）
     .venv\\Scripts\\python.exe -m miniagent.tests.test_m1_offline
 
-它验证三件事：
-  1. 两级注册表：TOOL_REGISTRY 里存「类」，Agent.tool_map 里存「实例」
-  2. 主循环：think -> act -> observe 能连续跑两轮工具调用
-  3. 工具真的被执行了（sql_query 查出的结果里有正确答案）
+验证 5 件事：
+  1. 两级注册表：TOOL_REGISTRY 存「类」，agent.tool_map 存「实例」
+  2. 主循环：think -> act -> observe 能连续跑多轮工具调用
+  3. 工具真的被执行了（结果里有正确答案）
+  4. 模型确实收到了工具说明书
+  5. 死循环保护：max_steps 能截断无限调用
 """
 from __future__ import annotations
 
@@ -15,6 +22,7 @@ import sqlite3
 import sys
 import tempfile
 
+# 允许 pytest / 脚本两种方式都能 import miniagent
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from miniagent.core.agent import Agent  # noqa: E402
@@ -39,7 +47,16 @@ class FakeLLM:
         return out
 
 
-def build_db(path: str) -> None:
+# 剧本：先看表结构 -> 再查数据 -> 最后总结
+SCRIPT = [
+    Message.assistant(function_call=FunctionCall('list_tables', '{}')),
+    Message.assistant(function_call=FunctionCall(
+        'sql_query', '{"query": "SELECT city FROM sales WHERE year = 2023 ORDER BY amount DESC LIMIT 1"}')),
+    Message.assistant('2023 年销售额最高的城市是杭州。'),
+]
+
+
+def _build_db(path: str) -> None:
     conn = sqlite3.connect(path)
     conn.execute('CREATE TABLE sales (city TEXT, year INTEGER, amount REAL)')
     conn.executemany('INSERT INTO sales VALUES (?,?,?)', [
@@ -51,54 +68,77 @@ def build_db(path: str) -> None:
     conn.close()
 
 
-def main() -> None:
-    tmpdir = tempfile.mkdtemp()
-    db = os.path.join(tmpdir, 'test.db')
-    build_db(db)
-
-    # ---- 断言 1：两级注册表 ----
-    assert 'sql_query' in TOOL_REGISTRY, 'sql_query 未注册进全局 TOOL_REGISTRY'
-    assert isinstance(TOOL_REGISTRY['sql_query'], type), 'TOOL_REGISTRY 里存的应该是「类」'
-
-    # ---- 剧本：先看表结构，再查数据，最后总结 ----
-    script = [
-        Message.assistant(function_call=FunctionCall('list_tables', '{}')),
-        Message.assistant(function_call=FunctionCall(
-            'sql_query', '{"query": "SELECT city FROM sales WHERE year = 2023 ORDER BY amount DESC LIMIT 1"}')),
-        Message.assistant('2023 年销售额最高的城市是杭州。'),
-    ]
-    fake = FakeLLM(script)
-
+def make_agent(script=None):
+    """造一个「假 LLM + 临时 db」的 agent，并跑一轮。返回 (agent, fake, produced)。"""
+    db = os.path.join(tempfile.mkdtemp(), 'test.db')
+    _build_db(db)
+    fake = FakeLLM(script if script is not None else SCRIPT)
     agent = Agent(
         llm=fake,
         system_message='你是数据分析助手',
         tools=[{'name': 'list_tables', 'db': db}, {'name': 'sql_query', 'db': db}],
     )
-
-    # ---- 断言 2：tool_map 里存的是「实例」 ----
-    assert isinstance(agent.tool_map['sql_query'], data_tools.SqlQuery), 'tool_map 里应该是工具实例'
-    assert agent.tool_map['sql_query'] is not TOOL_REGISTRY['sql_query'], '实例 != 类'
-
-    # ---- 跑主循环，收集所有产出的消息 ----
     produced = list(agent.run([Message.user('2023 年销售额最高的城市是哪个？')]))
+    return agent, fake, produced
 
-    roles = [m.role for m in produced]
-    print('产生消息序列:', roles)
-    print('最终答案:', produced[-1].content)
 
-    # ---- 断言 3：主循环连续跑了两轮工具调用 ----
-    assert roles == ['assistant', 'function', 'assistant', 'function', 'assistant'], f'消息序列不符: {roles}'
-    assert produced[-1].content.endswith('杭州。'), '最终答案不对'
+# ==================== pytest 风格测试 ====================
 
-    # ---- 断言 4：工具真的被执行了（不是伪造的结果）----
-    fn_results = [m for m in produced if m.role == 'function']
-    assert fn_results[0].name == 'list_tables' and 'sales' in fn_results[0].content
-    assert '杭州' in fn_results[1].content, 'sql_query 的结果里应包含正确答案'
+def test_registry_stores_classes_not_instances():
+    """第一级 TOOL_REGISTRY：名字 -> 类。"""
+    assert 'sql_query' in TOOL_REGISTRY
+    assert isinstance(TOOL_REGISTRY['sql_query'], type)
 
-    # ---- 断言 5：模型确实拿到了工具说明书 ----
+
+def test_agent_tool_map_stores_instances():
+    """第二级 agent.tool_map：名字 -> 实例（且实例 != 类）。"""
+    agent, _, _ = make_agent()
+    assert isinstance(agent.tool_map['sql_query'], data_tools.SqlQuery)
+    assert agent.tool_map['sql_query'] is not TOOL_REGISTRY['sql_query']
+
+
+def test_loop_runs_two_tool_rounds():
+    """主循环消息序列：assistant -> function -> assistant -> function -> assistant。"""
+    _, _, produced = make_agent()
+    assert [m.role for m in produced] == ['assistant', 'function', 'assistant', 'function', 'assistant']
+
+
+def test_final_answer_is_correct():
+    """最后一个 assistant 消息是最终答案。"""
+    _, _, produced = make_agent()
+    assert produced[-1].content.endswith('杭州。')
+
+
+def test_tools_actually_executed():
+    """工具真的跑了（不是伪造的结果）。"""
+    _, _, produced = make_agent()
+    functions = [m for m in produced if m.role == 'function']
+    assert 'sales' in functions[0].content      # list_tables 的结果
+    assert '杭州' in functions[1].content        # sql_query 的结果
+
+
+def test_llm_saw_tool_schemas():
+    """模型确实收到了两份工具说明书。"""
+    _, fake, _ = make_agent()
     assert set(fake.seen_tool_names) == {'list_tables', 'sql_query'}
 
-    print('\n✅ M1 全部断言通过（离线，无需 LLM）')
+
+def test_max_steps_guard():
+    """死循环保护：模型一直要调工具时，会被 max_steps 截断。"""
+    loop_script = [Message.assistant(function_call=FunctionCall('list_tables', '{}'))] * 20
+    _, _, produced = make_agent(loop_script)
+    assert '最大步数' in produced[-1].content
+
+
+# ==================== 脚本风格入口 ====================
+
+def main() -> None:
+    tests = [(k, v) for k, v in sorted(globals().items())
+             if k.startswith('test_') and callable(v)]
+    for name, fn in tests:
+        fn()
+        print(f'  ✅ {name}')
+    print(f'\n✅ M1 全部 {len(tests)} 个测试通过（离线，无需 LLM）')
 
 
 if __name__ == '__main__':
