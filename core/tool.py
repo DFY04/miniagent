@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Type, Union
 
 # ============ 第一级：全局工具目录（名字 -> 类） ============
-TOOL_REGISTRY: Dict[str, type] = {}
+# 值的类型是「BaseTool 的子类（类对象本身）」，所以用 Type[BaseTool] 而不是裸 type。
+# （这里引用了下方才定义的 BaseTool，靠文件顶部的 `from __future__ import annotations` 兜底）
+TOOL_REGISTRY: Dict[str, Type[BaseTool]] = {}
 
 
 class ToolError(Exception):
@@ -34,7 +36,7 @@ def tool(name: str, allow_overwrite: bool = False):
             ...
     """
 
-    def decorator(cls: type) -> type:
+    def decorator(cls: Type[BaseTool]) -> Type[BaseTool]:
         if name in TOOL_REGISTRY and not allow_overwrite:
             raise ValueError(f'工具 `{name}` 已存在。如需覆盖请传 allow_overwrite=True。')
         cls.name = name
