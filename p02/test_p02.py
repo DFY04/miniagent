@@ -15,7 +15,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from miniagent.core.message import FunctionCall, Message  # noqa: E402
-from miniagent.p02 import context  # noqa: E402
+from miniagent.core import context  # noqa: E402
 
 
 def _use_char_counter():
