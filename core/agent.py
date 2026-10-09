@@ -26,7 +26,9 @@ class Agent:
         system_message: str = '',
         tools: Optional[List[Union[str, dict, BaseTool]]] = None,
         max_steps: int = 10,
+        bus=None
     ):
+        self.bus=bus
         self.llm = llm
         self.system_message = system_message
         self.max_steps = max_steps
