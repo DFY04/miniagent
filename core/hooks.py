@@ -1,7 +1,7 @@
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Callable, Dict, List
+from dataclasses import dataclass
 
+
+from enum import Enum
 
 class EventType(Enum):
     RUN_START  = 'run_start'      # 整轮任务开始
@@ -13,37 +13,40 @@ class EventType(Enum):
     RUN_END    = 'run_end'        # 整轮结束
 
 
+from typing import Callable, Dict, List
+
+
 @dataclass
 class Event:
     type: EventType
-    data: dict = field(default_factory=dict)   # ★ 加了默认值，可以不传
+    data: dict          # 事件负载（如 {'name': 'sql_query', 'args': ...}）
 
 
 class EventBus:
     def __init__(self):
-        self._handlers: Dict[EventType, List[Callable]] = {}   # {事件类型: [处理函数, ...]}
-        self._all: List[Callable] = []                          # ★ 通配订阅者（subscribe_all 用）
-
+        self._handlers = {}          # 事件类型 -> [处理函数]   （字典！subscribe 要 .setdefault）
+        self.__all = []               # 通配订阅者             （列表！subscribe_all 要 .append）
     def subscribe(self, event_type: EventType, handler: Callable[[Event], None]) -> None:
-        # setdefault(key, default)：key 存在就返回它原来的值；不存在就先塞 [] 再返回。
-        # 于是这一行 = "如果这个事件还没有列表就建一个，然后把 handler 追加进去"。
-        self._handlers.setdefault(event_type, []).append(handler)
 
-    def subscribe_all(self, handler: Callable[[Event], None]) -> None:
-        """订阅【所有】事件。用一个单独的列表存，不遍历 EventType。"""
-        # ★ 原来的写法 `self._handlers.get(EventType)` 永远返回 None
-        #   （_handlers 的键是 EventType.xxx 这些成员，不是 EventType 这个类本身）。
-        self._all.append(handler)
+        self._handlers.setdefault(event_type,[]).append(handler)
+        #登记操作 setdefault(key,defaultvalue)是把字典类型的方法如果key的value不为空 直接返回key的值,否则返回defaultvalue,
+        #此时_handlers为空,返回空列表[]在对列表.append
 
-    def emit(self, event_type: EventType, **kwargs) -> None:
-        """广播。先叫通配订阅者，再叫专门订阅这个事件的。"""
-        def _call(handler):
+    def emit(self, event: EventType,**kwargs) -> None:
+
+        for fn in self.__all:  # 先叫通配的
             try:
-                handler(**kwargs)
-            except Exception as e:                       # 异常隔离：一个崩了不影响别人
-                print(f'  ⚠️ 订阅者 {getattr(handler, "__name__", handler)} 出错（已隔离）: {e}')
+                fn(**kwargs)
+            except Exception as e:
+                print(f"{e}已隔离")
+        for hanld in self._handlers.get(event,[]):
+            try:
+                hanld(**kwargs)
+            except Exception as e:
+                print(f"{e} 已经隔离")
+    def subscribe_all(self, handler) -> None:
+        self.__all.append(handler)
 
-        for handler in self._all:                        # ★ 通配的先
-            _call(handler)
-        for handler in self._handlers.get(event_type, []):
-            _call(handler)
+
+
+
