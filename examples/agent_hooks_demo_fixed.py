@@ -1,4 +1,4 @@
-"""P01 demo（修好版）—— 事件总线 + 挂了工具的 Agent。
+"""P01 demo（修好版）—— 事件总线 + 挂了工具的 Agent + 审批闸门。
 
 注意：这个文件和你原来那份 agent_hooks_demo.py 是两份，
      你原来那份我没再动。
@@ -6,48 +6,53 @@
 运行（在 qwen-agent 仓库根目录下）：
     .venv\\Scripts\\python.exe -m miniagent.examples.agent_hooks_demo_fixed
 
-修了原版的 6 个问题：
-  ① from build.lib.qwen_agent.llm import ...   → 删掉，改用 LLMClient
-  ② 重复定义 EventType                          → 删掉，用 import 的
-  ③ bus.subscribe(..., llmstart())              → 去掉括号
-  ④ llm = get_chat_model = {...}                → 改成 LLMClient({'model': 'qwen-max'})
-  ⑤ Agent(llm) 传的是 dict                      → 同上
-  ⑥ DF_Agent.run("现在几点了")                   → 传 List[Message] 且要 for 迭代
+三个订阅者演示了三种不同的"介入程度"：
+    tracer    → 只看一眼，记录
+    approval  → 要插手，危险操作前拦住（靠 raise ApprovalRejected）
 """
 from __future__ import annotations
 
 import os
 import sys
-from dataclasses import dataclass
 
-
-@dataclass
-class Event:
-    type: EventType
-    data: dict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from dotenv import load_dotenv
 
-from miniagent.core.agent import Agent
-from miniagent.core.hooks import EventBus, EventType
+from miniagent.core.hooks import ApprovalRejected, EventBus, EventType
+from miniagent.core.hooks_agent import Agent          # ★ 带埋点的 Agent
 from miniagent.core.message import Message
 from miniagent.llm import LLMClient
 from miniagent.tools import demo_tools  # noqa: F401  import 一下，now/add 才会注册
 
 
+# 危险工具名单（命中就要人工审批）
+DANGEROUS = {'add'}          # 演示用：把 add 当成危险操作
+
+
 # ==================== 订阅者 ====================
-# 统一用 **kw：emit 传什么参数进来都不会因为签名对不上而报错
-def llm_start(**kw):
-    print('  [hook] 开始调用大模型了')
+
+def tracer(**kw):
+    """只看一眼，记录。不影响流程。"""
+    print(f'  [tracer] {kw}')
 
 
-def tool_start(**kw):
-    print(f'  [hook] 开始执行工具了: {kw.get("name")}')
+def approval(**kw):
+    """要插手：危险操作前问人工。拒绝就 raise，让 Agent 中断。
 
+    ★ 这里抛的 ApprovalRejected 会穿过总线（总线对它不隔离），
+      一路冒到 Agent.run() 的 except 里。
+    """
+    name = kw.get('name')
+    if name not in DANGEROUS:
+        print(f'  [approval] {name} 不在危险名单里，放行')
+        return
 
-def run_end(**kw):
-    print('  [hook] 任务结束')
+    answer = input(f'  [approval] {name} 是危险操作，批准吗？(y/n) ')
+    if answer.strip().lower() != 'y':
+        print(f'  [approval] 拒绝 {name} → raise ApprovalRejected')
+        raise ApprovalRejected(name)
+    print(f'  [approval] 已批准 {name}')
 
 
 def main() -> None:
@@ -55,27 +60,24 @@ def main() -> None:
 
     # ---- 1) 建总线，注册订阅者 ----
     bus = EventBus()
-    bus.subscribe(EventType.LLM_START, llm_start)      # ★ 传函数本身，不带括号
-    bus.subscribe(EventType.TOOL_START, tool_start)
-    bus.subscribe(EventType.RUN_END, run_end)
+    bus.subscribe_all(tracer)                          # 所有事件都记一笔
+    bus.subscribe(EventType.TOOL_START, approval)      # 只在"要调工具"时插手
 
-    # ---- 2) 建 Agent，挂上两个工具 ----
+    # ---- 2) 建 Agent，挂上工具，并把 bus 传进去 ----
     llm = LLMClient({'model': 'qwen-max'})
     agent = Agent(
         llm=llm,
         system_message='你是一个智能助手',
         tools=['now', 'add'],
         max_steps=10,
+        bus=bus,                                       # ★ 传了 bus 才会发事件
     )
 
     # ---- 3) 跑 ----
-    # 说明：Agent 目前还没把 bus 接进去（那是下一步），所以这里手动 emit
-    bus.emit(EventType.LLM_START)
-    for msg in agent.run([Message.user('现在几点了')]):
-        if msg.function_call:
-            bus.emit(EventType.TOOL_START, name=msg.function_call.name)
-        print(msg)
-    bus.emit(EventType.RUN_END)
+    question = sys.argv[1] if len(sys.argv) > 1 else '帮我算一下 1+2，再看看现在几点'
+    print(f'用户: {question}\n')
+    for msg in agent.run([Message.user(question)]):
+        print(f'  [yield] {msg}')
 
 
 if __name__ == '__main__':

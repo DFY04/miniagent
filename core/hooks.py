@@ -22,6 +22,18 @@ class Event:
     data: dict          # 事件负载（如 {'name': 'sql_query', 'args': ...}）
 
 
+class ControlFlowSignal(Exception):
+    """控制流异常：意思是「流程要中断」。总线【不隔离】这类异常，直接往上抛。"""
+
+
+class ApprovalRejected(ControlFlowSignal):
+    """审批被拒绝（危险操作被拦下）。"""
+
+    def __init__(self, tool_name: str = ''):
+        super().__init__(f'人工拒绝执行工具 `{tool_name}`')
+        self.tool_name = tool_name
+
+
 class EventBus:
     def __init__(self):
         self._handlers = {}          # 事件类型 -> [处理函数]   （字典！subscribe 要 .setdefault）
@@ -37,11 +49,15 @@ class EventBus:
         for fn in self.__all:  # 先叫通配的
             try:
                 fn(**kwargs)
+            except ControlFlowSignal:
+                raise                        # ★ 控制流异常：放行（审批拒绝要传出去）
             except Exception as e:
                 print(f"{e}已隔离")
         for hanld in self._handlers.get(event,[]):
             try:
                 hanld(**kwargs)
+            except ControlFlowSignal:
+                raise                        # ★ 同上
             except Exception as e:
                 print(f"{e} 已经隔离")
     def subscribe_all(self, handler) -> None:

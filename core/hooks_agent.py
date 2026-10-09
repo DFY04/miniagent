@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Dict, Iterator, List, Optional, Union
 
-from miniagent.core.hooks import EventType
+from miniagent.core.hooks import ApprovalRejected, EventType
 from miniagent.core.message import FunctionCall, Message
 from miniagent.core.tool import TOOL_REGISTRY, BaseTool
 
@@ -96,7 +96,12 @@ class Agent:
                 return  # 没有工具调用 -> 任务结束
 
             tool_name = reply.function_call.name
-            self._emit(EventType.TOOL_START, name=tool_name)               # ★ 5
+            try:
+                self._emit(EventType.TOOL_START, name=tool_name)            # ★ 5
+            except ApprovalRejected as e:                                   # 审批订阅者拦下来了
+                self._emit(EventType.RUN_END, reason='rejected')
+                yield Message.assistant(f'[操作被拒绝] {e}')
+                return
             observation = self._execute(reply.function_call)
             self._emit(EventType.TOOL_END, name=tool_name, result=observation)   # ★ 6
 
