@@ -1,4 +1,7 @@
+from markdown_it.rules_inline import newline
+
 from miniagent.core.message import Message
+from miniagent.core.protocols import ChatModel      # ★ 给 llm 参数加注解用
 from qwen_agent.utils.tokenization_qwen import count_tokens, tokenizer
 
 
@@ -45,7 +48,8 @@ def truncate(messages: list[Message], max_tokens: int) -> list[Message]:
 
 
 
-# ==================== P03：摘要压缩 ====================
+# ==================== P03：摘要压缩 ===================
+
 
 SUMMARY_PROMPT = """请把下面的对话压缩成一段摘要。
 要求：
@@ -57,7 +61,7 @@ SUMMARY_PROMPT = """请把下面的对话压缩成一段摘要。
 {dialogue}"""
 
 
-def summarize(messages: list[Message], llm) -> str:
+def summarize(messages: list[Message], llm: ChatModel) -> str:
     """把一批消息交给 LLM，压成一段摘要，返回摘要字符串。
 
     步骤：
@@ -67,10 +71,15 @@ def summarize(messages: list[Message], llm) -> str:
 
     TODO: 实现它
     """
+    dialogue = '\n'.join(f'{m.role}: {m.content or ""}' for m in messages)
+    prompt = SUMMARY_PROMPT.format(dialogue=dialogue)
+    reply=llm.chat(Message.user(prompt))
+    return reply.content.strip()
+
     raise NotImplementedError('TODO: summarize')
 
 
-def compress(messages: list[Message], llm, max_tokens: int) -> list[Message]:
+def compress(messages: list[Message], llm: ChatModel, max_tokens: int) -> list[Message]:
     """超预算时先用摘要压缩，而不是直接丢。
 
     规则：
@@ -84,4 +93,22 @@ def compress(messages: list[Message], llm, max_tokens: int) -> list[Message]:
 
     TODO: 实现它
     """
-    raise NotImplementedError('TODO: compress')
+    total = sum(estimate_tokens(m.content or '') for m in messages)
+    if total <= max_tokens:
+        return messages
+    new_list=truncate(messages,max_tokens)
+    kept_ids = {id(m) for m in new_list}  # 存 id（int，可哈希）
+    cutted_list = [m for m in messages if id(m) not in kept_ids]
+    #现在我要把cutted_summery插在new_List的system message后边 (insert)
+    try:
+        sum_ed_list=summarize(cutted_list,llm)
+    except Exception:
+        return new_list
+    sum_ed_meesage=Message.system(f"之前的摘要{sum_ed_list}")
+    new_list.insert(1,sum_ed_meesage)
+    #再次检查一遍看看插入摘要消息之后会不会再次超过
+    total_after = sum(estimate_tokens(m.content or '') for m in new_list)
+    if total_after > max_tokens:
+        return truncate(new_list, max_tokens)
+
+    return new_list
