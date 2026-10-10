@@ -73,10 +73,10 @@ def summarize(messages: list[Message], llm: ChatModel) -> str:
     """
     dialogue = '\n'.join(f'{m.role}: {m.content or ""}' for m in messages)
     prompt = SUMMARY_PROMPT.format(dialogue=dialogue)
-    reply=llm.chat(Message.user(prompt))
+    reply=llm.chat([Message.user(prompt)])
     return reply.content.strip()
 
-    raise NotImplementedError('TODO: summarize')
+
 
 
 def compress(messages: list[Message], llm: ChatModel, max_tokens: int) -> list[Message]:
@@ -103,6 +103,8 @@ def compress(messages: list[Message], llm: ChatModel, max_tokens: int) -> list[M
     try:
         sum_ed_list=summarize(cutted_list,llm)
     except Exception:
+        return new_list
+    if not sum_ed_list:
         return new_list
     sum_ed_meesage=Message.system(f"之前的摘要{sum_ed_list}")
     new_list.insert(1,sum_ed_meesage)
