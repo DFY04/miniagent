@@ -1,3 +1,4 @@
+import math
 import os                                        # ★ 修1：不再 from encodings import utf_8（那是个模块，不是编码字符串）
 from typing import List, Optional
 
@@ -80,6 +81,72 @@ class DashScopeChromaRAG:
     def delete_collection(self):
         """删除整个集合，清空里面所有向量文档"""
         self.client.delete_collection(self.collection_name)
+
+
+# ====================== 离线玩具版：从零实现（零依赖，测试用） ======================
+# 这一段是 RAG 的"最小可运行原型"：纯 Python 手写分块 / 余弦相似度 / 内存向量库。
+# 不用 chromadb、不用 dashscope，单测全离线。真模型版见上面的 DashScopeChromaRAG。
+
+
+def chunk_text(text: str, size: int = 4, overlap: int = 0) -> List[str]:
+    """把长文本切成固定大小的小块，overlap 控制相邻块重叠多少。
+
+    size=4, overlap=0 → 步长 4：'abcdefghij' -> ['abcd', 'efgh', 'ij']
+    size=4, overlap=2 → 步长 2：'abcdef'     -> ['abcd', 'cdef', 'ef']
+    """
+    if size <= 0:
+        raise ValueError('size 必须 > 0')
+    if overlap < 0 or overlap >= size:
+        raise ValueError('overlap 必须满足 0 <= overlap < size')
+
+    step = size - overlap
+    chunks: List[str] = []
+    i = 0
+    while i < len(text):
+        chunks.append(text[i:i + size])   # 尾部不足 size 也照收（最后一块可能短）
+        i += step
+    return chunks
+
+
+def cosine(a: List[float], b: List[float]) -> float:
+    """余弦相似度：两个向量的夹角余弦，1=同向，0=垂直。"""
+    if len(a) != len(b):
+        raise ValueError(f'维度不一致：{len(a)} vs {len(b)}')
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(x * x for x in b))
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+class VectorStore:
+    """内存版向量库（玩具）：add_document 入库，search 按余弦相似度取 top-k。
+
+    只依赖 embedder 的 embed(text) 接口（鸭子类型），
+    所以能换 HashEmbedder / DashScopeEmbedder，本类一行不用改。
+    """
+
+    def __init__(self, embedder):
+        self.embedder = embedder
+        self._chunks: List[str] = []
+        self._vectors: List[List[float]] = []
+
+    def add_document(self, document: str) -> int:
+        # 玩具版：整篇当一个 chunk（真模型版的分块见 DashScopeChromaRAG.get_chunk）
+        self._chunks.append(document)
+        self._vectors.append(self.embedder.embed(document))
+        return 1
+
+    def __len__(self) -> int:
+        return len(self._chunks)
+
+    def search(self, query: str, k: int = 1):
+        """返回 [(score, chunk), ...]，按相似度从高到低，最多 k 条。"""
+        qv = self.embedder.embed(query)
+        scored = [(cosine(qv, v), c) for v, c in zip(self._vectors, self._chunks)]
+        scored.sort(key=lambda t: t[0], reverse=True)
+        return scored[:k]
 
 
 # ====================== 【使用示例】======================

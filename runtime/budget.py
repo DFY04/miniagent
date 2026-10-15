@@ -44,7 +44,7 @@ class Budget:
     def check(self) -> None:
         if self.max_tokens is not None and self.used_tokens > self.max_tokens:
             raise BudgetExceeded(f'token 超限: {self.used_tokens} > {self.max_tokens}')
-        if self.max_steps is not None and self.used_steps > self.max_steps:
-            raise BudgetExceeded(f'步数超限: {self.used_steps} > {self.max_steps}')
+        if self.max_steps is not None and self.used_steps >= self.max_steps:
+            raise BudgetExceeded(f'步数超限: {self.used_steps} >= {self.max_steps}')
         if self.max_cost_usd is not None and self.used_cost > self.max_cost_usd:
             raise BudgetExceeded(f'成本超限: {self.used_cost:.4f} > {self.max_cost_usd}')
