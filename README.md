@@ -1,37 +1,86 @@
 # MiniAgent
 
-一个自研的 **agent harness**（面试项目 / 教学项目）。
+一个自研的 **Agent harness**（面试 / 教学项目）。
 
-> 定位：不重造 LLM，只造 qwen-agent 没做的「骨架 + 生产特性」。
-> LLM 调用直接复用 `qwen_agent.llm.get_chat_model`，其余全部自研。
+> 定位：**不重造 LLM，只造 qwen-agent 没做的那一半** —— Agent 骨架 + 生产级可靠性设施。
+> LLM 调用直接复用 `qwen_agent.llm.get_chat_model`，其余（主循环、工具系统、记忆、可观测性、安全、可靠性）全部自研。
 
 ---
 
-## 现状（一句话）
+## 为什么做这个项目
 
-从"最小可跑骨架"出发，逐层补上了生产级 Agent 需要的可靠性设施：
-**事件埋点、Tracer、预算、重试、审批闸门、checkpoint/回滚、轻量沙箱、RAG 记忆、统一 CLI**。
-评测 harness（M6）与多智能体（M7）尚未开始。
+市面上的 Agent 框架（qwen-agent 等）大多把重心放在「怎么调 LLM」。但真正拉开差距、也是面试里最被追问的，是这些**LLM 之外的工程问题**：
+
+- 工具挂了怎么办？—— 异常不该炸掉整个主循环
+- 死循环 / 超预算怎么办？—— 需要显式上限与止损
+- 危险操作（删库、写文件）谁负责？—— 审批闸门 + 沙箱 + 回滚
+- 出了 bug 怎么查？—— 事件要能落盘、能回放
+- 怎么证明「改一行代码没把东西改坏」？—— 评测 harness
+
+MiniAgent 就是沿这条线，**从最小可跑骨架出发，一层一层把这些「生产特性」补上去**的过程记录。每一步都是独立的小里程碑（P01 → P11），各自有验收测试。
+
+---
+
+## 架构总览
+
+```mermaid
+flowchart TB
+    subgraph 入口
+        CLI[cli.py<br/>run / replay / eval]
+    end
+
+    subgraph 核心
+        LOOP[Agent 主循环<br/>core/agent.py<br/>think → act → observe]
+        REG[工具注册表<br/>core/tool.py<br/>TOOL_REGISTRY + tool_map]
+    end
+
+    subgraph 能力层
+        LLM[qwen-agent LLM<br/>（复用，不重造）]
+        TOOLS[工具<br/>sql / 文件 / 沙箱]
+        MEM[记忆<br/>短期窗口 / RAG]
+    end
+
+    subgraph 横切关注点 cross-cutting
+        TRACER[tracer 可观测]
+        BUDGET[budget 预算]
+        RETRY[retry 重试]
+        APPROVAL[approval 审批]
+        ROLLBACK[rollback 回滚]
+    end
+
+    CLI --> LOOP
+    LOOP --> LLM
+    LOOP --> TOOLS
+    LOOP --> MEM
+    TRACER -.事件流.-> LOOP
+    BUDGET -.事件流.-> LOOP
+    RETRY -.事件流.-> LOOP
+    APPROVAL -.事件流.-> LOOP
+    ROLLBACK -.事件流.-> LOOP
+    TRACER --> TRACE[(trace.jsonl<br/>可回放)]
+```
+
+**核心思路：横切关注点通过「事件总线」挂在主循环上，而不是写死在主循环里。** 每加一个可靠性特性，就是多挂一个订阅者，主循环本身几乎不用改。
 
 ---
 
 ## 功能地图（M1 → P11）
 
-| 编号 | 模块 | 文件 | 一句话 |
-|------|------|------|--------|
-| M1 | 主循环 + 工具注册表 | `core/agent.py` `core/tool.py` | think → act → observe 主循环，两级工具注册表 |
-| P01 | 事件总线 / 埋点 | `core/hooks.py` `core/hooks_agent.py` | 主循环每个关键点 emit 事件 |
-| P02 | 上下文截断 | `core/context.py` | token 超限时按优先级裁剪 |
-| P03 | 摘要压缩 | `p03/` | 旧对话压成摘要，腾出窗口 |
-| P04 | 短期记忆 | `memory/short_term.py` | 记得住对话，又不撑爆上下文 |
-| —   | RAG 长期记忆 | `memory/embedders.py` `memory/vector_store.py` | Chroma + DashScope 向量检索 |
-| P05 | Tracer | `runtime/tracer.py` | 事件落 JSONL，可回放 |
-| P06 | 预算 | `runtime/budget.py` | token/步数上限，超了优雅停 |
-| P07 | 重试 + 死循环检测 | `runtime/retry.py` | 指数退避重试 + 连续重复调用止损 |
-| P08 | 统一 CLI | `cli.py` | 一个入口：run / replay / eval |
-| P09 | 审批闸门 | `runtime/approval.py` | 危险操作执行前人工确认 |
-| P10 | checkpoint / 回滚 | `checkpoint/` `runtime/rollback.py` | 改文件前存档，失败可回滚 |
-| P11 | 轻量沙箱 | `tools/sandbox.py` | 子进程 + 超时 + 静态检查，跑 LLM 代码 |
+| 编号 | 模块 | 文件 | 解决什么问题 |
+|------|------|------|-------------|
+| M1 | 主循环 + 工具注册表 | `core/agent.py` `core/tool.py` | 最小可跑骨架 |
+| P01 | 事件总线 / 埋点 | `core/hooks.py` `core/hooks_agent.py` | 可观测的基础 |
+| P02 | 上下文截断 | `core/context.py` | token 超限怎么办 |
+| P03 | 摘要压缩 | `p03/` | 旧对话占窗口怎么办 |
+| P04 | 短期记忆 | `memory/short_term.py` | 记得住又不撑爆 |
+| —   | RAG 长期记忆 | `memory/embedders.py` `memory/vector_store.py` | 外挂知识库 |
+| P05 | Tracer | `runtime/tracer.py` | 事件落盘、可回放 |
+| P06 | 预算 | `runtime/budget.py` | token/步数超限止损 |
+| P07 | 重试 + 死循环检测 | `runtime/retry.py` | 偶发失败 + 兜底 |
+| P08 | 统一 CLI | `cli.py` | 一个入口跑所有事 |
+| P09 | 审批闸门 | `runtime/approval.py` | 危险操作人工确认 |
+| P10 | checkpoint / 回滚 | `checkpoint/` `runtime/rollback.py` | 改坏了能撤 |
+| P11 | 轻量沙箱 | `tools/sandbox.py` | 跑 LLM 生成的代码 |
 | M6  | 评测 harness | — | ⬜ 未开始 |
 | M7  | 多智能体 | — | ⬜ 未开始 |
 
@@ -48,25 +97,22 @@ miniagent/
     tool.py            # ★ 两级注册表 + @tool 装饰器 + BaseTool
     agent.py           # ★ 主循环 Agent.run()
     hooks.py           # 事件类型 + 控制流信号
-    hooks_agent.py     # 带埋点的主循环（副本）
+    hooks_agent.py     # 带埋点的主循环
     context.py         # token 估算 + 上下文截断
     protocols.py       # Protocol 类型（给 mypy 用）
     mem_agent.py       # 带记忆的主循环
-  runtime/
+  runtime/             # 横切关注点（都靠事件总线挂载）
     tracer.py          # P05 事件落 JSONL + 回放
     budget.py          # P06 token/步数预算
     retry.py           # P07 重试 + 死循环检测
     approval.py        # P09 审批闸门
     rollback.py        # P10 回滚闸门
-    practice.py        # 练习 / 参考实现
-    tracer_reference.py
   checkpoint/
     checkpoint.py      # P10 快照存档
-    *.py               # demo + 自测
   memory/
     short_term.py      # P04 短期记忆
     embedders.py       # 文本→向量（Hash 玩具 / DashScope 真模型）
-    vector_store.py    # Chroma 向量库 + RAG 检索
+    vector_store.py    # 内存版 VectorStore（离线）+ Chroma RAG（真模型）
   tools/
     data_tools.py      # SQLite 只读查询
     demo_tools.py      # 玩具工具（now / add）
@@ -74,105 +120,82 @@ miniagent/
     sandbox.py         # P11 轻量沙箱
   p02/ p03/ p04/       # 阶段性里程碑 + 各自验收
   examples/            # 各类 demo（数据 agent / hooks / checkpoint / rag）
-  tests/               # 离线验收测试（pytest，不联网不烧 API）
-```
-
----
-
-## 数据流（主循环）
-
-```
-用户问题
-   │
-   ▼
-Agent.run(messages)
-   │  ① 注入 system 消息
-   ▼
- for step in range(max_steps):
-     reply = llm.chat(messages, tools=tool_schemas)   # 把工具说明书喂给模型
-     │
-     ├── reply 没有 function_call  → 结束，返回最终答案
-     └── reply 有 function_call
-            │  ② 从 tool_map 取出工具实例，执行
-            ▼
-         observation = tool.call(arguments)
-            │  ③ 作为 function 消息追加回 messages（observe）
-            └── 继续下一轮
+  tests/               # 离线验收测试（pytest）
 ```
 
 ---
 
 ## 关键设计决策（面试可讲的点）
 
-### 1. 两级工具注册表
-- **全局 `TOOL_REGISTRY` 存「类」**，**Agent 的 `tool_map` 存「实例」**。
-- 类定义一次全局共享；实例在创建 Agent 时按需带 `cfg`，不同 Agent 互不影响。
-- 对应 qwen-agent 的 `TOOL_REGISTRY` + `function_map`，这里做了显式简化。
+1. **两级工具注册表**：全局 `TOOL_REGISTRY` 存「类」，Agent 的 `tool_map` 存「实例」。类共享、实例按需带 `cfg` 隔离。
+2. **复用而非重造 LLM 层**：直接 `get_chat_model`，只写消息格式双向转换。
+3. **横切关注点事件化**：tracer / budget / retry / approval / rollback 都是事件订阅者，主循环无感。
+4. **可注入 LLM**：`Agent(llm=...)` 接受任何有 `chat(messages, tools)` 的对象 → 假 LLM 做离线测试。
+5. **工具「永不抛异常」契约**：`call()` 永远返回字符串，失败包装成 observation 回给模型，不炸主循环。
+6. **凡 LLM 可控的数值都 clamp**：超时、预算、重试次数一律服务端夹到安全区间。
+7. **三层防护沙箱**：静态检查（AST）→ 超时 kill → 目录隔离，三件事互相不覆盖；诚实声明「防手滑不防恶意」。
+8. **声明式写路径**：工具 `declare_writes()` 声明要改哪些文件，checkpoint 在动手前存档。
 
-### 2. 复用而非重造 LLM 层
-- 直接 `from qwen_agent.llm import get_chat_model`。
-- 只为适配器写「消息格式双向转换」，不碰 HTTP / 流式 / 方言。
+---
 
-### 3. 主循环的两个改进（相对 qwen-agent）
-- **显式 `max_steps`**：防死循环，超限时明确报错，而不是静默返回。
-- **工具异常被捕获**：工具执行失败转成字符串 observation 回给模型，整个 run 不崩。
+## 测试
 
-### 4. 可注入的 LLM（离线测试）
-- `Agent(llm=...)` 接受任何有 `chat(messages, tools)` 的对象。
-- 因此可以用假 LLM 做**离线测试**，跑 CI 不烧 API 额度。
+**174 条测试，全部离线可跑**（不调真实 LLM、不烧 API、不需要 API key）。
 
-### 5. 事件总线 + Tracer（可观测性）
-- 主循环每个关键点 `emit` 事件，`runtime/tracer.py` 把它落成 JSONL。
-- 跑完可以 `cli replay` 回放，定位"这轮为什么慢 / 为什么调了 3 次工具"。
+```bash
+.venv\Scripts\python.exe -m pytest miniagent -q        # 全量
+.venv\Scripts\python.exe -m pytest miniagent/tests -v  # 看每条
+```
 
-### 6. 三层防护的轻量沙箱（P11）
-- 静态检查（AST）→ 超时 kill → 目录隔离，三件事互相不覆盖。
-- 诚实的边界：防"手滑"，不防"恶意绕过"；真隔离要容器。
+覆盖范围：
 
-### 7. 凡 LLM 可控的数值都 clamp
-- LLM 能传 `timeout=99999` 拆掉超时保护，所以服务端一律夹到安全区间。
-- 同理：token/步数预算、重试次数。
-
-### 8. 工具"永不抛异常"契约
-- `call()` 永远返回字符串，失败也包装成 observation 回给模型。
-- 否则工具一抛异常，整个 Agent 主循环被炸。
-
-### 9. 声明式写路径（P10 checkpoint 的基石）
-- 工具用 `declare_writes()` 声明"我会改哪些文件"，Agent 在动手**前**存档。
-- 工具不用认识 Checkpoint，解耦。
+| 测试文件 | 覆盖 |
+|----------|------|
+| `test_m1_offline.py` | 主循环 + 工具注册表（假 LLM） |
+| `test_p01_hooks.py` | 事件总线 |
+| `test_p05_tracer.py` | 事件落盘 + 回放 |
+| `test_p06_budget.py` | 预算与 off-by-one 边界 |
+| `test_p07_retry.py` | 重试 + 死循环检测 |
+| `test_p09_approval.py` | 审批闸门 |
+| `test_p10_checkpoint.py` | 存档 / 回滚 |
+| `test_p11_sandbox.py` | 沙箱三层防护（27 条） |
+| `test_vector_store.py` | RAG 原语（分块 / 余弦 / 内存向量库） |
 
 ---
 
 ## 怎么跑
 
-在 qwen-agent 仓库根目录下（依赖它的 LLM 层）：
+在 qwen-agent 仓库根目录下（复用它的 LLM 层）：
 
 ```bash
-# 1. 全部离线测试（不需要网络 / API key）
-.venv\Scripts\python.exe -m pytest miniagent/tests -v
-
-# 2. 单个模块的验收，例如沙箱
-.venv\Scripts\python.exe -m pytest miniagent/tests/test_p11_sandbox.py -v
-.venv\Scripts\python.exe -m miniagent.tools.sandbox        # 8 组真机输出
-
-# 3. 统一 CLI
+# 统一 CLI
 .venv\Scripts\python.exe -m miniagent.cli --help
 .venv\Scripts\python.exe -m miniagent.cli run "你的问题"
 .venv\Scripts\python.exe -m miniagent.cli run "文档该怎么切分" \
     --rag miniagent/memory/asn.txt --trace trace.jsonl
 .venv\Scripts\python.exe -m miniagent.cli replay trace.jsonl
+
+# 沙箱自测（8 组真机输出）
+.venv\Scripts\python.exe -m miniagent.tools.sandbox
 ```
 
-> `run` 会真的调模型，需要一个可用的 LLM 配置（默认 `qwen-max` + `DASHSCOPE_API_KEY`，写在项目根目录 `.env` 里）。
+> `run` 会真的调模型，需要 `DASHSCOPE_API_KEY`（写在项目根目录 `.env` 里）。
 
 ---
 
 ## 依赖
 
-- `qwen-agent` —— 复用 LLM 层（不重造）
-- `chromadb` —— RAG 向量库
-- `dashscope` —— embedding / 真模型调用
+- `qwen-agent` —— 复用 LLM 层
+- `chromadb` / `dashscope` —— RAG 向量库与 embedding
 - `matplotlib` —— 沙箱画图
+
+---
+
+## 诚实的边界（局限性）
+
+- **沙箱不是真隔离**：静态检查拦不住 `__import__("o"+"s")` 这类运行时拼名字的绕过；真隔离要容器（qwen-agent 的 code_interpreter 走的就是那条路）。
+- **LLM 层是复用的**：本项目不涉及流式、tool-call 协议、方言适配这些底层细节。
+- **评测 harness（M6）与多智能体（M7）尚未实现**。
 
 ---
 
@@ -180,13 +203,13 @@ Agent.run(messages)
 
 | 里程碑 | 内容 | 状态 |
 |--------|------|------|
-| **M1** | 主循环 + 两级工具注册表 + LLM 适配器 | ✅ 完成 |
-| **M2** | 上下文管理（截断 + 摘要）+ 短期记忆 + RAG | ✅ 完成 |
-| **M3** | Tracer：事件落 JSONL，可回放 | ✅ 完成 |
-| **M4** | 可靠性：预算、重试、死循环检测 | ✅ 完成 |
-| **M5** | 审批闸门 + checkpoint/resume + 沙箱 | ✅ 完成 |
-| **M6** | 评测 harness：用例集 → 自动打分 → 报告 | ⬜ 未开始 |
-| **M7** | 多智能体 orchestrator | ⬜ 未开始 |
+| M1 | 主循环 + 两级工具注册表 + LLM 适配器 | ✅ |
+| M2 | 上下文管理 + 短期记忆 + RAG | ✅ |
+| M3 | Tracer（落盘 + 回放） | ✅ |
+| M4 | 预算、重试、死循环检测 | ✅ |
+| M5 | 审批闸门 + checkpoint/resume + 沙箱 | ✅ |
+| M6 | 评测 harness | ⬜ |
+| M7 | 多智能体 orchestrator | ⬜ |
 
 ---
 
@@ -195,7 +218,6 @@ Agent.run(messages)
 | MiniAgent | qwen-agent |
 |-----------|-----------|
 | `core/tool.py` `TOOL_REGISTRY` / `@tool` | `tools/base.py` `TOOL_REGISTRY` / `register_tool` |
-| `Agent.tool_map` / `register_tool()` | `agent.py` `function_map` / `_init_tool` |
 | `core/agent.py` `Agent.run()` | `agents/fncall_agent.py` `FnCallAgent._run` |
 | `core/message.py` `Message` | `llm/schema.py` `Message` |
 | `llm.py` `LLMClient` | `llm/base.py` `BaseChatModel`（直接复用） |
