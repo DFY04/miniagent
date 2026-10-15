@@ -2,7 +2,7 @@ from markdown_it.rules_inline import newline
 
 from miniagent.core.message import Message
 from miniagent.core.protocols import ChatModel      # ★ 给 llm 参数加注解用
-from qwen_agent.utils.tokenization_qwen import count_tokens, tokenizer
+from qwen_agent.utils.tokenization_qwen import count_tokens
 
 
 
@@ -22,10 +22,13 @@ def truncate(messages: list[Message], max_tokens: int) -> list[Message]:
     new_list1: List[Message] = []#用于保存其他词
     a:List[str]=[]
     # estimate_tokens=count_tokens(messages[0].content)   # ← 原变量名，会遮蔽上面那个函数
-    for i in range(len(messages)):
-        if messages[i].role=="system":
-            new_list.append(messages[i])
-            a.append(messages[i].content)
+    # enumerate：一边遍历元素，一边拿到它的下标
+    # 这里其实用不到下标 i，所以直接 `for m in messages` 最干净；
+    # 但一旦需要下标（比如判断“是不是最后一条 system”），enumerate 就是标准写法
+    for i, m in enumerate(messages):
+        if m.role == "system":
+            new_list.append(m)
+            a.append(m.content)
     last_user_token=estimate_tokens(messages[-1].content)
     system_token=estimate_tokens("".join(a))
     must_token=last_user_token+system_token

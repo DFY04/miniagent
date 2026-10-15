@@ -10,6 +10,14 @@ __pycache__/
 workspace/
 eval/report.md
 
+# 向量库 / 检索的本地数据（不是代码，不能进仓库）
+**/chroma_db/
+**/chroma_probe/
+chroma.sqlite3
+
+# tracer 运行时输出
+tracer_file.txt
+
 # 编辑器
 .idea/
 .vscode/

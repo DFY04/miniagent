@@ -19,7 +19,9 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from miniagent.core.context import compress, truncate
+from miniagent.core.context import compress, truncate, estimate_tokens
+
+
 from miniagent.core.message import Message
 from miniagent.core.protocols import ChatModel
 
@@ -32,9 +34,14 @@ class ShortTermMemory:
         这个类负责两件事：**记着所有消息**、**给出去时裁到预算内**。
     """
 
-    def __init__(self, max_tokens: int, llm: Optional[ChatModel] = None):
-        """【目的】记住"预算是多少"和"要不要用 LLM 做摘要"。
+    def __init__(self, max_tokens: int,llm: Optional[ChatModel] = None):
+        self.max_tokens=max_tokens
+        self.llm=llm
 
+
+        self.message :List[Message]=[]
+        """【目的】记住"预算是多少"和"要不要用 LLM 做摘要"。
+        
         Args:
             max_tokens: 这个记忆最多能占多少 token。
             llm: 用来做摘要的模型。
@@ -42,7 +49,7 @@ class ShortTermMemory:
 
         TODO: 实现 —— 存下这两个参数，并准备一个空的消息列表装历史。
         """
-        raise NotImplementedError('TODO: __init__')
+
 
     def add(self, msg: Message) -> None:
         """【目的】把一条新消息记进来。
@@ -53,9 +60,10 @@ class ShortTermMemory:
 
         TODO: 实现 —— 把 msg 追加到内部列表。
         """
-        raise NotImplementedError('TODO: add')
+        self.message.append(msg)
 
-    def build(self) -> list[Message]:
+
+    def build(self,) -> list[Message]:
         """【目的】返回"可以喂给模型"的消息列表，保证不超过 max_tokens。
 
         规则：
@@ -68,4 +76,16 @@ class ShortTermMemory:
 
         TODO: 实现 —— 判断有没有 llm，分别调 compress 或 truncate。
         """
-        raise NotImplementedError('TODO: build')
+        total_token=sum(estimate_tokens(m.content or '') for m in self.message)
+        if total_token<=self.max_tokens:
+            return self.message
+        if total_token>self.max_tokens and self.llm:
+            compressed_mssage=compress(self.message,self.llm,self.max_tokens)
+            return compressed_mssage
+        if total_token > self.max_tokens and not self.llm:
+            truncated_meesage=truncate(self.message,self.max_tokens)
+            return truncated_meesage
+
+
+
+

@@ -72,6 +72,28 @@ class BaseTool(ABC):
             'parameters': self.parameters,
         }
 
+    # ---------------- P10：声明式「我要改哪些文件」 ----------------
+    def declare_writes(self, params: Union[str, dict]) -> list:
+        """★ 声明这次调用会改动【哪几个文件路径】，默认返回空列表（= 什么都不改）。
+
+        【为什么要这个东西】
+            Agent 要在工具动手【之前】让 Checkpoint 存档，得先知道该存谁。
+            可 Agent 自己看不懂参数 —— 每个工具的 schema 都不一样
+            （写文件是 path，查库是 sql，跑代码是一整段源码）。
+
+            两条路：
+              ① 工具在自己的 call() 里手写 ckpt.snapshot_file(...)
+                 → 能跑，但每个工具都要认识 Checkpoint，耦合重。
+              ② 工具只【声明】自己会碰哪些路径，动手交给 Agent。（本文件采用 ②）
+
+        Args:
+            params: 这次调用的参数（JSON 字符串或 dict），和 call() 一样。
+
+        Returns:
+            list：会被修改 / 创建的文件路径。空列表 = 不动文件。
+        """
+        return []
+
     @staticmethod
     def parse_params(params: Union[str, dict]) -> dict:
         """把 LLM 传来的参数（JSON 字符串）解析成 dict。"""

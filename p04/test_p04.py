@@ -1,12 +1,19 @@
-"""P04 验收测试：短期记忆 + 长期记忆。
+"""P04 验收测试：短期记忆（长期记忆见 tests/test_rag_memory.md 的说明）。
 
 跑法：
     .venv\\Scripts\\python.exe -m pytest miniagent/p04/test_p04.py -v
     .venv\\Scripts\\python.exe -m miniagent.p04.test_p04
 
-两个类都支持依赖注入，所以测试全离线：
-    ShortTermMemory(max_tokens, llm=假LLM)
-    LongTermMemory(retriever=假检索器)
+【为什么这里只测短期记忆】
+    长期记忆最终选的是"自建 RAG"路线（不走 qwen-agent 的 Retrieval，
+    也不包一个 LongTermMemory 门面类），所以没有可离线测的类：
+        memory/vector_store.py   DashScopeChromaRAG（要联网 + 要 API KEY）
+        memory/embedders.py      HashEmbedder（离线玩具版）/ DashScopeEmbedder
+    长期记忆的验收靠"实跑"：
+        .venv\\Scripts\\python.exe -m miniagent.examples.agent_hooks_demo
+    看它能不能把 asn.txt 里的内容检索出来并回答。
+
+    短期记忆仍然全离线测：ShortTermMemory(max_tokens, llm=假LLM)
 """
 from __future__ import annotations
 
@@ -17,7 +24,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from miniagent.core import context  # noqa: E402
 from miniagent.core.message import Message  # noqa: E402
-from miniagent.memory.long_term import LongTermMemory  # noqa: E402
 from miniagent.memory.short_term import ShortTermMemory  # noqa: E402
 
 
@@ -38,20 +44,6 @@ class FakeSummaryLLM:
         self.calls += 1
         self.last_prompt = messages[-1].content
         return Message.assistant(self.summary)
-
-
-class FakeRetriever:
-    """假检索器：记录收到了什么参数，返回固定片段。"""
-
-    def __init__(self, result: str = '片段内容'):
-        self.result = result
-        self.calls = 0
-        self.last_params = None
-
-    def call(self, params, **kwargs):
-        self.calls += 1
-        self.last_params = params
-        return self.result
 
 
 # ==================== ShortTermMemory ====================
@@ -129,59 +121,10 @@ def test_stm_add_does_not_mutate_input():
     assert mem.build()[0] is msg or mem.build()[0] == msg
 
 
-# ==================== LongTermMemory ====================
-
-def test_ltm_retrieve_passes_query_and_files():
-    """★ query 和文档列表都要交给 retriever。"""
-    r = FakeRetriever('片段内容')
-    mem = LongTermMemory(retriever=r)
-    mem.add_documents(['a.txt', 'b.txt'])
-
-    out = mem.retrieve('公司去年营收多少')
-    assert out == '片段内容'
-    assert r.last_params['query'] == '公司去年营收多少'
-    assert r.last_params['files'] == ['a.txt', 'b.txt']
-
-
-def test_ltm_no_documents_returns_empty():
-    """★ 没登记文档 → 返回空字符串，而且不该去调检索器。"""
-    r = FakeRetriever()
-    mem = LongTermMemory(retriever=r)
-
-    assert mem.retrieve('随便问点什么') == ''
-    assert r.calls == 0, '没文档就别去调检索器了'
-
-
-def test_ltm_empty_query_returns_empty():
-    """★ 空 query → 返回空字符串，不调检索器。"""
-    r = FakeRetriever()
-    mem = LongTermMemory(retriever=r)
-    mem.add_documents(['a.txt'])
-
-    assert mem.retrieve('') == ''
-    assert r.calls == 0
-
-
-def test_ltm_documents_accumulate():
-    """多次 add_documents 要累积，不能覆盖。"""
-    r = FakeRetriever()
-    mem = LongTermMemory(retriever=r)
-    mem.add_documents(['a.txt'])
-    mem.add_documents(['b.txt'])
-
-    mem.retrieve('q')
-    assert r.last_params['files'] == ['a.txt', 'b.txt']
-
-
-def test_ltm_documents_deduplicate():
-    """重复的路径不该重复登记。"""
-    r = FakeRetriever()
-    mem = LongTermMemory(retriever=r)
-    mem.add_documents(['a.txt', 'b.txt'])
-    mem.add_documents(['b.txt', 'c.txt'])
-
-    mem.retrieve('q')
-    assert r.last_params['files'] == ['a.txt', 'b.txt', 'c.txt']
+# ==================== LongTermMemory（已废弃，见文件头说明）====================
+# 原来有 5 条用例测 LongTermMemory。长期记忆改成自建 RAG 后，
+# 那个门面类连同 memory/retriever.py 一起删了，这里的用例也一并移除。
+# 长期记忆的验收方式：跑 examples/agent_hooks_demo.py，看能不能答出 asn.txt 里的内容。
 
 
 # ==================== 脚本模式入口 ====================

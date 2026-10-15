@@ -11,6 +11,11 @@ class EventType(Enum):
     TOOL_END   = 'tool_end'       # 工具返回了
     STEP_END   = 'step_end'       # 一步结束
     RUN_END    = 'run_end'        # 整轮结束
+    RAG_START = "rag_start"
+    RAG_END = "rag_end"
+    LLM_RETRY = "llm_retry"      # ★ P07：LLM 调用失贤，准备退避重试
+    ROLLBACK = "rollback"        # ★ P10：两个世界一起回滚（上下文 + 文件）
+    CKPT_ERROR = "ckpt_error"    # ★ P10：存档 / 记账失败了（不能影响主流程）
 
 
 from typing import Callable, Dict, List
@@ -48,7 +53,13 @@ class EventBus:
 
         for fn in self.__all:  # 先叫通配的
             try:
-                fn(**kwargs)
+                # ★ P05 修正：把事件类型也传给通配订阅者。
+                #   原来只传 fn(**kwargs)，订阅者根本不知道收到的是哪种事件，
+                #   Tracer 就没法写记录的 type 字段。
+                #   用“关键字”而不是位置参数，是因为旧订阅者写的是 def h(**kw)，
+                #   传关键字只会把 event 装进 kw（不报错）；传位置参数会直接 TypeError，
+                #   而且还会被下面的异常隔离吞掉。
+                fn(event=event, **kwargs)
             except ControlFlowSignal:
                 raise                        # ★ 控制流异常：放行（审批拒绝要传出去）
             except Exception as e:

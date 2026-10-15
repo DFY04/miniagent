@@ -87,6 +87,7 @@ class Agent:
         for step in range(self.max_steps):
             self._emit(EventType.LLM_START, step=step)                     # ★ 2
             reply = self.llm.chat(messages, tools=self.tool_schemas)
+            reply.step = step                 # ★ 盖上步号（在 LLM_END 之前，让 trace 里能看到）
             messages.append(reply)
             yield reply
             self._emit(EventType.LLM_END, reply=reply)                     # ★ 3
@@ -105,7 +106,7 @@ class Agent:
             observation = self._execute(reply.function_call)
             self._emit(EventType.TOOL_END, name=tool_name, result=observation)   # ★ 6
 
-            fn_msg = Message.function(name=tool_name, content=observation)
+            fn_msg = Message.function(name=tool_name, content=observation, step=step)
             messages.append(fn_msg)
             yield fn_msg
             self._emit(EventType.STEP_END, step=step)                      # ★ 7

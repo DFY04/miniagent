@@ -73,8 +73,9 @@ class Agent:
         if self.system_message and (not messages or messages[0].role != 'system'):
             messages.insert(0, Message.system(self.system_message))
 
-        for _ in range(self.max_steps):
+        for step in range(self.max_steps):
             reply = self.llm.chat(messages, tools=self.tool_schemas)
+            reply.step = step                   # ★ 给 assistant 消息盖上「第几步」
             messages.append(reply)
             yield reply
 
@@ -82,7 +83,7 @@ class Agent:
                 return  # 没有工具调用 -> 任务结束
 
             observation = self._execute(reply.function_call)
-            fn_msg = Message.function(name=reply.function_call.name, content=observation)
+            fn_msg = Message.function(name=reply.function_call.name, content=observation, step=step)
             messages.append(fn_msg)
             yield fn_msg
 

@@ -103,6 +103,16 @@ def test_loop_runs_two_tool_rounds():
     assert [m.role for m in produced] == ['assistant', 'function', 'assistant', 'function', 'assistant']
 
 
+def test_messages_carry_step_number():
+    """★ 细颗粒：同一轮 run 里的每一步，assistant 和它对应的 function 共享同一个 step。
+
+    SCRIPT 走三步：查表结构(0) -> 查数据(1) -> 总结(2)，
+    所以 produced 的 step 序列应该是 [0, 0, 1, 1, 2]。
+    """
+    _, _, produced = make_agent()
+    assert [m.step for m in produced] == [0, 0, 1, 1, 2]
+
+
 def test_final_answer_is_correct():
     """最后一个 assistant 消息是最终答案。"""
     _, _, produced = make_agent()
