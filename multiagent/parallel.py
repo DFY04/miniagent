@@ -61,6 +61,36 @@
        ★ 不做"静默降级"：失败原因一定进报告，不做"看起来成功其实少了一块"。
 
 ════════════════════════════════════════════════════════════════════
+【★ 副作用：并行改同一个文件会打架】
+
+    工具调用的执行发生在 Agent 内部（core/agent.py 的 _execute），编排器本来
+    不需要管。但【写文件】是个例外，因为它有全局状态：
+
+        ① 两个 worker 同时写同一个文件 → 后写覆盖前写 / 内容交错损坏
+        ② 存档（Checkpoint）顺序错乱 → 回滚到错误的状态
+        ③ 只保留 produced[-1].content 的话，谁改了哪个文件完全丢失
+
+    所以这里加了三件事：
+
+    ┌─────────────────┬──────────────────────────────────────────────┐
+    │ ① 派活前查冲突     │ planner 给每个子任务声明 writes；求交集。        │
+    │                 │ 必须在派活【前】查 —— 跑起来发现冲突时已经写坏了。 │
+    ├─────────────────┼──────────────────────────────────────────────┤
+    │ ② 派活前快照      │ 动手前把 sub.writes 里的文件存进 Checkpoint。   │
+    │                 │ 这样并行改坏了也能回滚。                       │
+    ├─────────────────┼──────────────────────────────────────────────┤
+    │ ③ 记录产出        │ TaskResult.written 记下真正存了档的文件。       │
+    └─────────────────┴──────────────────────────────────────────────┘
+
+    on_write_conflict 两种策略：
+        'reject'    （默认）有冲突直接 PlanError，让 planner 重拆。最安全。
+        'serialize' 冲突的子任务分批：批内并行、批间串行。冲突少时有用。
+
+    ★ 还有第三种 isololate（每个 worker 独立目录，最后合并），不在这里实现：
+      它需要给每个 worker 配不同的工具（root 指向不同目录），属于使用层的编排，
+      不是编排器能替使用者决定的。要隔离就把 tools/sandbox.py 的 cwd 那招搬过来。
+
+════════════════════════════════════════════════════════════════════
 【契约】
 
     FanOutOrchestrator(
@@ -71,6 +101,9 @@
         on_error='collect',     # 'collect' | 'raise'
         serialize_per_agent=True,  # 同一个成员不并发（详见下）
         synthesizer_name='synthesizer',
+        checkpoint=None,        # 可选的 Checkpoint 实例（不传就不存档）
+        checkpoint_step=0,      # 起始步号：第 i 个子任务用 checkpoint_step + i
+        on_write_conflict='reject',   # 'reject' | 'serialize'
     )
 
     run(messages) -> Iterator[Message]
@@ -94,13 +127,17 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from typing import (Any, Callable, Dict, Iterator, List, Mapping,
-                    Optional, Protocol, Sequence)
+from pathlib import Path
+from typing import (TYPE_CHECKING, Any, Callable, Dict, Iterator, List,
+                    Mapping, Optional, Protocol, Sequence, Tuple)
 
 from miniagent.core.agent import Agent
 from miniagent.core.hooks import ControlFlowSignal
 from miniagent.core.message import Message
 from miniagent.multiagent.hub import MultiAgentHub
+
+if TYPE_CHECKING:                      # ★ 只在类型检查时引用，运行时不 import
+    from miniagent.checkpoint import Checkpoint    # 保持"编排"与"存档"低耦合
 
 
 # ============================================================================
@@ -114,13 +151,21 @@ from miniagent.multiagent.hub import MultiAgentHub
 
 @dataclass
 class SubTask:
-    """一个子任务：谁（assignee）去干什么（task）。"""
-    id: Any                      # 任务编号（归位用；不保证是 int，planner 给的）
+    """一个子任务：谁（assignee）去干什么（task），会碰哪些文件（writes）。"""
+    id: Any                      # 任务编号（给报告看的；planner 给，可能是任何东西）
     assignee: str                # 执行者名字，必须在成员名册里
     task: str                    # 要给这个执行者看的那一句话
+    writes: List[str] = field(default_factory=list)
+    # ↑ planner 声明的「这次会改哪些文件」。空列表 = 只读任务。
+    #   它是冲突检测和快照的唯一依据 —— 不声明就等于"我不知道它会写什么"。
+    index: int = 0
+    # ↑ 编排器分配的顺序号（0..N-1）。与 id 分工：
+    #   id    —— planner 给的，可能缺失/重复，只用来给人看
+    #   index —— 编排器保证唯一且稳定，用来【归位】和【算步号】
 
     def __repr__(self) -> str:
-        return f'SubTask(#{self.id} → {self.assignee}: {self.task[:30]!r})'
+        w = f' writes={self.writes}' if self.writes else ''
+        return f'SubTask(#{self.id} → {self.assignee}: {self.task[:30]!r}{w})'
 
 
 @dataclass
@@ -133,6 +178,12 @@ class TaskResult:
     output: str = ''
     error: str = ''
     elapsed: float = 0.0         # 这条子任务花了多少秒
+    index: int = 0               # 归位用（完成顺序不可靠，靠它排序）
+    written: List[str] = field(default_factory=list)
+    # ↑ 真正被 snapshot 到的文件（相对 Checkpoint root）。
+    #   为什么必须记下来：并行模式下工具过程被丢掉了，
+    #   如果不记，事后完全不知道"这一轮改了哪些文件"，也就是无法回滚。
+    ckpt_error: str = ''         # 存档失败原因（不影响 ok，但必须能看到）
 
     def __repr__(self) -> str:
         state = 'ok' if self.ok else f'FAIL({self.error})'
@@ -144,6 +195,7 @@ class ParallelReport:
     """整轮并行的体检报告。写完可以直接丢给 tracer / 评测 harness。"""
     results: List[TaskResult] = field(default_factory=list)
     wall_elapsed: float = 0.0    # 墙钟时间：从派活到全部收工
+    batches: int = 1             # 分了几批跑（'serialize' 策略下可能 > 1）
 
     # ---- 便利视图 ----
     @property
@@ -182,12 +234,14 @@ class ParallelReport:
         return {
             'wall_elapsed': self.wall_elapsed,
             'speedup': self.speedup,
+            'batches': self.batches,
             'ok_count': self.ok_count,
             'failed_count': self.failed_count,
             'tasks': [
                 {'id': r.id, 'assignee': r.assignee, 'task': r.task,
                  'ok': r.ok, 'output': r.output, 'error': r.error,
-                 'elapsed': r.elapsed}
+                 'elapsed': r.elapsed, 'written': r.written,
+                 'ckpt_error': r.ckpt_error}
                 for r in self.results
             ],
         }
@@ -340,7 +394,24 @@ def parse_plan(raw: str) -> List[Dict[str, Any]]:
         if not assignee:
             raise PlanError(f'第 {i} 个子任务缺少 assignee：{item!r}')
 
-        plan.append({'id': item.get('id', i), 'assignee': assignee, 'task': task})
+        # ---- writes：声明会改哪些文件（可选；缺省 = 只读任务）----
+        # ★ 为什么缺省成空列表而不是报错？
+        #   “没声明”对纯查询类任务是合理的（planner 不用写一堆空数组）。
+        #   但要注意后果：没声明 = 编排器不知道它会写文件 = 不查冲突、不快照。
+        #   所以【会写文件的子任务必须显式声明】，这条要写进 planner 的 prompt 里。
+        raw_writes = item.get('writes')
+        if raw_writes is None:
+            raw_writes = []
+        if not isinstance(raw_writes, list):
+            raise PlanError(f'第 {i} 个子任务的 writes 必须是列表：{raw_writes!r}')
+        writes: List[str] = []
+        for w in raw_writes:
+            if not isinstance(w, str) or not w.strip():
+                raise PlanError(f'第 {i} 个子任务的 writes 里有非法路径：{w!r}')
+            writes.append(w.strip())
+
+        plan.append({'id': item.get('id', i), 'assignee': assignee,
+                     'task': task, 'writes': writes})
 
     if not plan:
         raise PlanError('planner 拆出了空的任务列表（没有可并行执行的东西）')
@@ -349,7 +420,51 @@ def parse_plan(raw: str) -> List[Dict[str, Any]]:
 
 
 # ============================================================================
-#  ④ 并行编排器
+#  ④ 写冲突检测（独立函数 → 可以单独测，不用起 Agent、不用真文件）
+# ============================================================================
+
+def normalize_path(path: str, base: Optional[Any] = None) -> str:
+    """把一个路径规范化成可以比较的字符串。
+
+    ★ 为什么必须规范化？
+        同一个文件可以有一百种写法：
+            a.txt  /  ./a.txt  /  sub/../a.txt  /  C:\\x\\a.txt
+        不规范化，两个 worker 写同一个文件你都检测不出来。
+
+    ★ 为什么 base 参数：
+        相对路径必须有个基准才能变成绝对路径。优先用 Checkpoint 的 root
+        （那才是“项目根”），没有就给当前工作目录。
+    """
+    p = Path(path)
+    if not p.is_absolute() and base is not None:
+        p = Path(base) / p
+    return str(p.resolve())
+
+
+def find_write_conflicts(
+    subtasks: Sequence[SubTask],
+    base: Optional[Any] = None,
+) -> List[Tuple[Any, Any, str]]:
+    """找出“两个子任务声明会写同一个文件”的冲突。
+
+    Returns:
+        [(先声明的任务 id, 后声明的任务 id, 规范化后的路径), ...]
+        空列表 = 没冲突，可以放心并行。
+    """
+    owner: Dict[str, Any] = {}
+    conflicts: List[Tuple[Any, Any, str]] = []
+    for sub in subtasks:
+        for raw in sub.writes:
+            key = normalize_path(raw, base)
+            if key in owner:
+                conflicts.append((owner[key], sub.id, key))
+            else:
+                owner[key] = sub.id
+    return conflicts
+
+
+# ============================================================================
+#  ⑤ 并行编排器
 # ============================================================================
 
 class FanOutOrchestrator(MultiAgentHub):
@@ -365,8 +480,12 @@ class FanOutOrchestrator(MultiAgentHub):
         '请把上面的任务拆成若干【可以并行执行】的子任务。要求：\n'
         '1. 子任务之间必须互相独立：任何子任务的输入里都不包含另一个子任务的产出；\n'
         '2. 每个子任务必须指定一个执行者，执行者只能从这些人里选：{names}；\n'
-        '3. 只输出 JSON 数组，不要解释、不要 markdown 围栏。格式：\n'
-        '[{{"id": 1, "assignee": "执行者名字", "task": "要做什么"}}]'
+        '3. 如果子任务会【修改文件】，必须在 writes 里列出会改的文件路径；'
+        '只读的纯查询子任务给空列表 []。\n'
+        '4. 只输出 JSON 数组，不要解释、不要 markdown 围栏。格式：\n'
+        '[{{"id": 1, "assignee": "执行者名字", "task": "要做什么", '
+        '"writes": ["要改的文件路径"]}}]\n'
+        '★ writes 尤其重要：两个子任务写同一个文件会直接报错（它们会被同时执行）。'
     )
 
     def __init__(
@@ -381,6 +500,9 @@ class FanOutOrchestrator(MultiAgentHub):
         on_error: str = 'collect',
         serialize_per_agent: bool = True,
         synthesizer_name: str = 'synthesizer',
+        checkpoint: Optional['Checkpoint'] = None,
+        checkpoint_step: int = 0,
+        on_write_conflict: str = 'reject',
     ):
         super().__init__(agents)        # 基类：非空校验 + 名字校验 + 复制一份
 
@@ -390,6 +512,12 @@ class FanOutOrchestrator(MultiAgentHub):
             raise ValueError(f"on_error 只能是 'collect' 或 'raise'，收到 {on_error!r}")
         if max_tasks < 1:
             raise ValueError(f'max_tasks 必须 >= 1，收到 {max_tasks}')
+        if on_write_conflict not in ('reject', 'serialize'):
+            raise ValueError(
+                f"on_write_conflict 只能是 'reject' 或 'serialize'，收到 {on_write_conflict!r}"
+            )
+        if checkpoint_step < 0:
+            raise ValueError(f'checkpoint_step 必须 >= 0，收到 {checkpoint_step}')
 
         self.planner = planner
         self.synthesizer = synthesizer
@@ -397,6 +525,14 @@ class FanOutOrchestrator(MultiAgentHub):
         self.max_tasks = max_tasks
         self.on_error = on_error
         self.serialize_per_agent = serialize_per_agent
+
+        # ---- 文件副作用 ----
+        self.checkpoint = checkpoint
+        self.checkpoint_step = checkpoint_step
+        self.on_write_conflict = on_write_conflict
+        # ★ 一把锁专门保护 Checkpoint：它的 self.step 是共享可变状态，
+        #   begin_step + snapshot_file 必须原子完成（详见 _snapshot）。
+        self._ckpt_lock = threading.Lock()
 
         # ★ 执行器：外部给了就用外部的（max_workers 交给它自己管）
         self._executor: TaskExecutor = executor or ThreadExecutor(max_workers)
@@ -435,8 +571,8 @@ class FanOutOrchestrator(MultiAgentHub):
                 f'（太多并发会被 API 限流，也会让成本失控）'
             )
 
-        subtasks = []
-        for item in plan:
+        subtasks: List[SubTask] = []
+        for i, item in enumerate(plan):
             assignee = item['assignee']
             # ★ 名字写错 → 当场报错并列出合法名字。不猜、不降级。
             if assignee not in self._agents:
@@ -444,9 +580,100 @@ class FanOutOrchestrator(MultiAgentHub):
                     f'planner 指定的执行者 {assignee!r} 不在成员名册里。'
                     f'可用成员：{self.agent_names}'
                 )
-            subtasks.append(SubTask(id=item['id'], assignee=assignee, task=item['task']))
+            subtasks.append(SubTask(
+                id=item['id'], assignee=assignee, task=item['task'],
+                writes=item['writes'], index=i,
+            ))
+
+        # ★★ 写冲突必须在【派活前】查：
+        #    一旦并行跑起来，发现冲突时文件已经被写坏了，来不及。
+        if self.on_write_conflict == 'reject':
+            conflicts = find_write_conflicts(subtasks, base=self._write_base())
+            if conflicts:
+                detail = '; '.join(f'#{a} 与 #{b} 都要写 {p}' for a, b, p in conflicts)
+                raise PlanError(
+                    f'子任务存在写冲突：{detail}。'
+                    f'同一个文件不能被两个并行任务同时改 —— '
+                    f'请让 planner 重拆，或改用 on_write_conflict="serialize"。'
+                )
 
         return subtasks
+
+    # ------------------------------------------------------------------
+    #  写冲突：规范化基准 + 分批
+    # ------------------------------------------------------------------
+    def _write_base(self) -> Path:
+        """路径规范化的基准：有 Checkpoint 就用它的 root，否则用当前目录。
+
+        为什么用 Checkpoint 的 root：那才是“项目根”，工具也是在它底下写的。
+        """
+        if self.checkpoint is not None:
+            return Path(self.checkpoint.root)
+        return Path.cwd()
+
+    def _make_batches(self, subtasks: Sequence[SubTask]) -> List[List[SubTask]]:
+        """把子任务分批：**同一批内不存在写冲突**。
+
+            'reject'    → 永远只有 1 批（有冲突早在 _plan 里就报了）
+            'serialize' → 贪心装箱：能塞进已有批就塞，塞不进就开新批
+
+        批间串行、批内并行，就是“冲突的任务不能同时跑”的最小实现。
+        """
+        if self.on_write_conflict != 'serialize':
+            return [list(subtasks)]
+
+        base = self._write_base()
+        batches: List[List[SubTask]] = []
+        for sub in subtasks:
+            mine = {normalize_path(w, base) for w in sub.writes}
+            for batch in batches:
+                taken = {normalize_path(w, base) for other in batch for w in other.writes}
+                if not (mine & taken):          # 和这批里的都不撞 → 可以并进这一批
+                    batch.append(sub)
+                    break
+            else:
+                batches.append([sub])           # 全都撞 → 自己开一批
+        return batches
+
+    def _snapshot(self, sub: SubTask) -> Tuple[List[str], str]:
+        """动手前把 sub.writes 里的文件存进 Checkpoint。
+
+        Returns:
+            (成功存档的文件列表, 错误信息)
+
+        ★ 为什么整段要加锁？
+            Checkpoint.step 是一个【共享可变属性】。两个 worker 同时调
+            begin_step，后调的把先调的覆盖掉，于是 A 的文件被存进了 B 的
+            step 目录 —— 回滚时会拿到错误版本，而且查不出来。
+            begin_step + snapshot_file 必须作为一个原子操作。
+
+        ★ 为什么存档失败不打断任务？
+            少存一次档，代价只是“这一步回不去”；抛出去就是整个任务崩掉。
+            （跟 core/mem_agent.py 里 _snapshot_writes 的取舍一致。）
+            但错误一定记在 TaskResult.ckpt_error 里，不允许静默。
+        """
+        if self.checkpoint is None:
+            return [], ''
+
+        written: List[str] = []
+        error = ''
+        # ★ 基准必须和冲突检测用同一个：writes 里可能是相对路径，
+        #   而 Checkpoint._rel() 是按【当前工作目录】解析的 —— 不先转成
+        #   “相对 root 的绝对路径”，快照会直接报“不在 root 内”。
+        base = self._write_base()
+        try:
+            with self._ckpt_lock:
+                self.checkpoint.begin_step(self.checkpoint_step + sub.index)
+                for p in sub.writes:
+                    try:
+                        abs_path = Path(normalize_path(p, base))
+                        rel = self.checkpoint.snapshot_file(abs_path)
+                        written.append(str(rel))
+                    except Exception as exc:                  # noqa: BLE001
+                        error = f'{type(exc).__name__}: {exc}'
+        except Exception as exc:                              # noqa: BLE001
+            error = f'{type(exc).__name__}: {exc}'
+        return written, error
 
     # ------------------------------------------------------------------
     #  ② 单个 worker：注意"输入是独立构造的"
@@ -466,7 +693,16 @@ class FanOutOrchestrator(MultiAgentHub):
         #    结果会串味，而且错得毫无规律。
         msgs: List[Message] = [Message.user(sub.task)]
 
+        written: List[str] = []
+        ckpt_error = ''
+
         try:
+            # ★★ 快照必须在 agent.run【之前】：
+            #    工具是在 Agent 内部执行的，等 run 返回时文件早就改完了，
+            #    那时再存就是存“改后”的版本，回滚毫无意义。
+            if sub.writes:
+                written, ckpt_error = self._snapshot(sub)
+
             ctx = self._locks[sub.assignee] if self.serialize_per_agent else nullcontext()
             with ctx:
                 produced = list(agent.run(msgs))
@@ -480,6 +716,7 @@ class FanOutOrchestrator(MultiAgentHub):
                 id=sub.id, assignee=sub.assignee, task=sub.task,
                 ok=True, output=output,
                 elapsed=round(time.time() - t0, 4),
+                index=sub.index, written=written, ckpt_error=ckpt_error,
             )
 
         except ControlFlowSignal:
@@ -492,6 +729,7 @@ class FanOutOrchestrator(MultiAgentHub):
                 id=sub.id, assignee=sub.assignee, task=sub.task,
                 ok=False, error=f'{type(exc).__name__}: {exc}',
                 elapsed=round(time.time() - t0, 4),
+                index=sub.index, written=written, ckpt_error=ckpt_error,
             )
 
     # ------------------------------------------------------------------
@@ -542,10 +780,20 @@ class FanOutOrchestrator(MultiAgentHub):
     def _run(self, messages: Sequence[Message]) -> Iterator[Message]:
         t0 = time.time()
 
-        subtasks = self._plan(messages)                        # ① 拆分（**必须**在这一步就失败得很清楚）
-        results = self._executor.map(self._run_one, subtasks)  # ② 并发（顺序与 subtasks 一致）
+        subtasks = self._plan(messages)          # ① 拆分 + 查写冲突
+        batches = self._make_batches(subtasks)   # ② 分批（'reject' 只有 1 批）
+
+        by_index: Dict[int, TaskResult] = {}
+        for batch in batches:                    # 批【间】串行（为了避开写冲突）
+            for r in self._executor.map(self._run_one, batch):   # 批【内】并行
+                by_index[r.index] = r
+
+        # ★ 按计划顺序归位：完成顺序不可靠，index 才可靠
+        results = [by_index[t.index] for t in subtasks]
         wall = round(time.time() - t0, 4)
-        self.last_report = ParallelReport(results=results, wall_elapsed=wall)
+        self.last_report = ParallelReport(
+            results=results, wall_elapsed=wall, batches=len(batches)
+        )
 
         # ③ 失败策略
         if self.on_error == 'raise' and self.last_report.failed_count:

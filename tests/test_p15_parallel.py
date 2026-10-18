@@ -420,13 +420,17 @@ def test_control_flow_signal_propagates():
 def test_parse_plan_handles_markdown_fence():
     """LLM 很爱把 JSON 包在 ```json 围栏里。"""
     raw = '```json\n[{"id": 1, "assignee": "甲", "task": "t1"}]\n```'
-    assert parse_plan(raw) == [{'id': 1, 'assignee': '甲', 'task': 't1'}]
+    assert parse_plan(raw) == [
+        {'id': 1, 'assignee': '甲', 'task': 't1', 'writes': []}
+    ]
 
 
 def test_parse_plan_handles_dict_wrapper():
     """也允许 {"tasks": [...]} 这种再包一层。"""
     raw = '{"tasks": [{"assignee": "甲", "task": "t1"}]}'
-    assert parse_plan(raw) == [{'id': 1, 'assignee': '甲', 'task': 't1'}]
+    assert parse_plan(raw) == [
+        {'id': 1, 'assignee': '甲', 'task': 't1', 'writes': []}
+    ]
 
 
 def test_parse_plan_handles_explanatory_text():

@@ -33,9 +33,9 @@ from miniagent.multiagent.parallel import (
 
 PLAN_TEXT = json.dumps({
     'tasks': [
-        {'id': 'A', 'assignee': '调研员甲', 'task': '调研竞品 A 的价格策略'},
-        {'id': 'B', 'assignee': '调研员乙', 'task': '调研竞品 B 的功能差异'},
-        {'id': 'C', 'assignee': '调研员丙', 'task': '调研竞品 C 的用户口碑'},
+        {'id': 'A', 'assignee': '调研员甲', 'task': '调研竞品 A 的价格策略', 'writes': []},
+        {'id': 'B', 'assignee': '调研员乙', 'task': '调研竞品 B 的功能差异', 'writes': []},
+        {'id': 'C', 'assignee': '调研员丙', 'task': '调研竞品 C 的用户口碑', 'writes': []},
     ]
 }, ensure_ascii=False, indent=2)
 
@@ -209,6 +209,9 @@ def main() -> None:
     print(f'  synthesizer 被调用 {calls["synth"]} 次（汇总只做一次）')
     print('  ★ 每个 worker 只收到自己那一条子任务，看不到别人 —— 上下文隔离')
     print('  ★ 所以身份转换（_render_view）在并行模式下根本用不上')
+    print('  ★ 这三个子任务的 writes 都是 []（只读）→ 不查写冲突、不需要快照')
+    print('     要改文件时，planner 必须在 writes 里声明；两个任务抢同一个文件 → 直接报错，')
+    print('     或者在 on_write_conflict="serialize" 下分批（批间串行）。')
 
 
 if __name__ == '__main__':

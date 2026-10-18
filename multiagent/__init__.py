@@ -26,6 +26,8 @@ from miniagent.multiagent.parallel import (
     TaskExecutor,
     TaskResult,
     ThreadExecutor,
+    find_write_conflicts,
+    normalize_path,
     parse_plan,
 )
 
@@ -41,6 +43,9 @@ __all__ = [
     'ParallelReport',
     'PlanError',
     'parse_plan',
+    # 写冲突
+    'find_write_conflicts',
+    'normalize_path',
     # 可替换的执行器
     'TaskExecutor',
     'SyncExecutor',

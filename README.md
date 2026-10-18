@@ -83,6 +83,7 @@ flowchart TB
 | P11 | 轻量沙箱 | `tools/sandbox.py` | 跑 LLM 生成的代码 |
 | P14 | 多智能体·串行 | `multiagent/orchestrator.py` | LLM 每轮选人的 handoff 编排 |
 | P15 | 多智能体·并行 | `multiagent/parallel.py` | fan-out / fan-in 并行编排 |
+| P16 | 并行写安全 | `multiagent/parallel.py` | 写冲突检测 + 派活前快照 |
 | M6  | 评测 harness | — | ⬜ 未开始 |
 
 ---
@@ -142,6 +143,7 @@ miniagent/
 8. **声明式写路径**：工具 `declare_writes()` 声明要改哪些文件，checkpoint 在动手前存档。
 9. **两种编排策略是兄弟，不是继承链**：`Orchestrator`（串行/共享上下文）与 `FanOutOrchestrator`（并行/隔离）都继承 `MultiAgentHub`，但**互相不 import**——换策略只换一个类。
 10. **执行器可注入**：并行编排只依赖一个 `map(fn, tasks) -> list` 的协议。默认线程池；测试注入 `SyncExecutor` 让结果确定、不起线程；以后换 asyncio/多进程只需新增一个类，编排逻辑不动。
+11. **并行 + 写文件 = 三件事**：① 派活**前**查写冲突（跑起来再发现就晚了）；② 动手**前**把文件存进 Checkpoint（否则存的是改后版本，回滚失效）；③ `TaskResult.written` 记下改了哪些文件（并行会丢掉工具过程，不记就无法审计/回滚）。
 
 ---
 
@@ -160,7 +162,7 @@ flowchart LR
 |---|---|---|
 | 谁决定下一步 | LLM 每轮选人（handoff） | planner 一次拆完，执行器并发 |
 | 上下文 | **共享**一条时间线 | **隔离**，每人只见自己的子任务 |
-| 核心难题 | 身份转换（别人的话算 user 还是 assistant） | 结果归位 / 并发上限 / 部分失败 |
+| 核心难题 | 身份转换（别人的话算 user 还是 assistant） | 结果归位 / 并发上限 / 部分失败 / **写冲突** |
 | 适合 | 辩论、评审、接力 | 批量处理、多路调研 |
 | 加速比 | ≈1（本质串行） | 可接近成员数 |
 
@@ -177,7 +179,7 @@ flowchart LR
 
 ## 测试
 
-**235 条测试，全部离线可跑**（不调真实 LLM、不烧 API、不需要 API key）。
+**255 条测试，全部离线可跑**（不调真实 LLM、不烧 API、不需要 API key）。
 
 ```bash
 .venv\Scripts\python.exe -m pytest miniagent -q        # 全量
@@ -198,6 +200,7 @@ flowchart LR
 | `test_p11_sandbox.py` | 沙箱三层防护（27 条） |
 | `test_p14_orchestrator.py` | 串行编排（34 条：身份转换 / 分段合并 / 选人兜底） |
 | `test_p15_parallel.py` | 并行编排（27 条：真并行 / 并发上限 / 部分失败 / 计划解析） |
+| `test_p16_parallel_writes.py` | 并行写安全（20 条：冲突须在执前拦 / 快照早于写入 / 存档失败不静默） |
 | `test_vector_store.py` | RAG 原语（分块 / 余弦 / 内存向量库） |
 
 ---
@@ -236,7 +239,7 @@ flowchart LR
 - **LLM 层是复用的**：本项目不涉及流式、tool-call 协议、方言适配这些底层细节。
 - **并行的收益有上限**：瓶颈在 API 延迟与限流，`max_workers` 设太大只会换来 429；同一个成员默认**不**并发（防数据竞争），要榨满并发需自己保证 llm 线程安全。
 - **评测 harness（M6）尚未实现**：多智能体的"加一个成员到底有没有用"目前只能靠人工对比。
-- **多智能体没接预算/追踪**：`runtime/budget.py`、`runtime/tracer.py` 尚未挂到 `multiagent/` 上，多轮/多并发的成本目前不受控。
+- **多智能体没接预算/追踪**：`runtime/budget.py`、`runtime/tracer.py` 尚未挂到 `multiagent/` 上（文件副作用已接：写冲突检测 + 派活前快照），多轮/多并发的成本仍不受控。
 
 ---
 
