@@ -81,8 +81,9 @@ flowchart TB
 | P09 | 审批闸门 | `runtime/approval.py` | 危险操作人工确认 |
 | P10 | checkpoint / 回滚 | `checkpoint/` `runtime/rollback.py` | 改坏了能撤 |
 | P11 | 轻量沙箱 | `tools/sandbox.py` | 跑 LLM 生成的代码 |
+| P14 | 多智能体·串行 | `multiagent/orchestrator.py` | LLM 每轮选人的 handoff 编排 |
+| P15 | 多智能体·并行 | `multiagent/parallel.py` | fan-out / fan-in 并行编排 |
 | M6  | 评测 harness | — | ⬜ 未开始 |
-| M7  | 多智能体 | — | ⬜ 未开始 |
 
 ---
 
@@ -118,6 +119,10 @@ miniagent/
     demo_tools.py      # 玩具工具（now / add）
     file_tools.py      # P10 文件工具（声明写路径）
     sandbox.py         # P11 轻量沙箱
+  multiagent/          # P14/P15 多智能体编排（基类 + 两种策略）
+    hub.py             # 基类：成员名册 + 身份转换（串行用）
+    orchestrator.py    # 串行策略：LLM 每轮选人（handoff）
+    parallel.py        # 并行策略：拆分 → 并发 → 汇总
   p02/ p03/ p04/       # 阶段性里程碑 + 各自验收
   examples/            # 各类 demo（数据 agent / hooks / checkpoint / rag）
   tests/               # 离线验收测试（pytest）
@@ -135,12 +140,44 @@ miniagent/
 6. **凡 LLM 可控的数值都 clamp**：超时、预算、重试次数一律服务端夹到安全区间。
 7. **三层防护沙箱**：静态检查（AST）→ 超时 kill → 目录隔离，三件事互相不覆盖；诚实声明「防手滑不防恶意」。
 8. **声明式写路径**：工具 `declare_writes()` 声明要改哪些文件，checkpoint 在动手前存档。
+9. **两种编排策略是兄弟，不是继承链**：`Orchestrator`（串行/共享上下文）与 `FanOutOrchestrator`（并行/隔离）都继承 `MultiAgentHub`，但**互相不 import**——换策略只换一个类。
+10. **执行器可注入**：并行编排只依赖一个 `map(fn, tasks) -> list` 的协议。默认线程池；测试注入 `SyncExecutor` 让结果确定、不起线程；以后换 asyncio/多进程只需新增一个类，编排逻辑不动。
+
+---
+
+## 多智能体：两种编排策略
+
+```mermaid
+flowchart LR
+    HUB[MultiAgentHub<br/>成员名册]
+    HUB --> S[Orchestrator<br/>串行 · 共享上下文]
+    HUB --> P[FanOutOrchestrator<br/>并行 · 上下文隔离]
+    S --> S1[每轮 LLM 选人<br/>需要身份转换 _render_view]
+    P --> P1[planner 拆分 → 并发跑 → synthesizer 汇总]
+```
+
+| | 串行 `Orchestrator` | 并行 `FanOutOrchestrator` |
+|---|---|---|
+| 谁决定下一步 | LLM 每轮选人（handoff） | planner 一次拆完，执行器并发 |
+| 上下文 | **共享**一条时间线 | **隔离**，每人只见自己的子任务 |
+| 核心难题 | 身份转换（别人的话算 user 还是 assistant） | 结果归位 / 并发上限 / 部分失败 |
+| 适合 | 辩论、评审、接力 | 批量处理、多路调研 |
+| 加速比 | ≈1（本质串行） | 可接近成员数 |
+
+**为什么并行不需要 `_render_view`**：worker 只拿到自己那条子任务，别人的话它根本看不见 → 身份问题不存在。
+这正是两条路线的分水岭：**共享上下文换来「互相看见」，代价是「身份混乱」；隔离换来「简单干净」，代价是「看不见彼此」**。
+
+```bash
+# 看两种策略的差别（离线，不联网）
+.venv\Scripts\python.exe -m miniagent.multiagent.parallel_demo
+.venv\Scripts\python.exe -m miniagent.multiagent.demo
+```
 
 ---
 
 ## 测试
 
-**174 条测试，全部离线可跑**（不调真实 LLM、不烧 API、不需要 API key）。
+**235 条测试，全部离线可跑**（不调真实 LLM、不烧 API、不需要 API key）。
 
 ```bash
 .venv\Scripts\python.exe -m pytest miniagent -q        # 全量
@@ -159,6 +196,8 @@ miniagent/
 | `test_p09_approval.py` | 审批闸门 |
 | `test_p10_checkpoint.py` | 存档 / 回滚 |
 | `test_p11_sandbox.py` | 沙箱三层防护（27 条） |
+| `test_p14_orchestrator.py` | 串行编排（34 条：身份转换 / 分段合并 / 选人兜底） |
+| `test_p15_parallel.py` | 并行编排（27 条：真并行 / 并发上限 / 部分失败 / 计划解析） |
 | `test_vector_store.py` | RAG 原语（分块 / 余弦 / 内存向量库） |
 
 ---
@@ -195,7 +234,9 @@ miniagent/
 
 - **沙箱不是真隔离**：静态检查拦不住 `__import__("o"+"s")` 这类运行时拼名字的绕过；真隔离要容器（qwen-agent 的 code_interpreter 走的就是那条路）。
 - **LLM 层是复用的**：本项目不涉及流式、tool-call 协议、方言适配这些底层细节。
-- **评测 harness（M6）与多智能体（M7）尚未实现**。
+- **并行的收益有上限**：瓶颈在 API 延迟与限流，`max_workers` 设太大只会换来 429；同一个成员默认**不**并发（防数据竞争），要榨满并发需自己保证 llm 线程安全。
+- **评测 harness（M6）尚未实现**：多智能体的"加一个成员到底有没有用"目前只能靠人工对比。
+- **多智能体没接预算/追踪**：`runtime/budget.py`、`runtime/tracer.py` 尚未挂到 `multiagent/` 上，多轮/多并发的成本目前不受控。
 
 ---
 
@@ -209,7 +250,7 @@ miniagent/
 | M4 | 预算、重试、死循环检测 | ✅ |
 | M5 | 审批闸门 + checkpoint/resume + 沙箱 | ✅ |
 | M6 | 评测 harness | ⬜ |
-| M7 | 多智能体 orchestrator | ⬜ |
+| M7 | 多智能体 orchestrator | ✅（串行 + 并行两种策略） |
 
 ---
 
