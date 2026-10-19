@@ -18,6 +18,7 @@
 出了 bug 查不了 → 事件总线 + Tracer 落 JSONL，可回放
 多轮撑爆窗口    → 上下文截断 + 摘要压缩 + 短期记忆
 LLM 生成的代码  → 子进程沙箱，三层防护
+第三方工具接入  → MCP 适配器（把 MCP server 的工具挂成普通工具）
 ```
 
 **一条主线架构决策**：这些能力**没有一条写死在主循环里**，全部通过「事件总线」挂载为订阅者 —— 加一个能力 = 加一个订阅者，主循环几乎不用改。
@@ -125,6 +126,20 @@ flowchart TB
 
 并行侧额外做了三件"副作用"护栏：**派活前查写冲突**（跑起来再发现就晚了）、**动手前快照**（否则存的是改后版本）、**执行器可注入**（测试用同步执行器，不起线程、结果确定）。
 
+### 7. MCP 接入：只加了一个适配器，核心零改动
+
+`mcp/` 把任意 MCP server（stdio）的工具变成普通 `BaseTool`，`tools=mcp.tools` 就能挂：
+
+| 要翻译的 | 怎么翻 |
+|---|---|
+| 工具名 | 净化成 `^[a-zA-Z0-9_-]{1,64}$`（可加 `prefix` 防多 server 重名） |
+| `input_schema` | 只留 `type / properties / required` —— 丢掉 `$schema`、`title`，否则部分厂商 API 直接 400 |
+| `CallToolResult` | 块列表 → 字符串；图片/资源只回报占位，不把 base64 塞进上下文 |
+
+真正难的只有一处：**MCP SDK 是 async，`BaseTool.call()` 是 sync**。做法是后台线程跑一个常驻协程，主线程通过队列投递请求并同步等结果。注意不能"在主线程建连接、在后台线程用"——anyio 的 task group 进入与退出必须在同一个 task 里。
+
+> **这一条本身就是"接口设计是否合格"的证明**：第三方能力接进来，`core/agent.py` 和 `core/tool.py` 一行没改。
+
 ---
 
 ## 快速开始
@@ -139,17 +154,24 @@ cd Qwen-Agent && pip install -e .
 # 把 miniagent/ 放到 Qwen-Agent 根目录下（或直接把本仓库作为子目录）
 ```
 
+用到 MCP 功能时额外装：
+
+```bash
+pip install mcp
+```
+
 ### 跑测试（不需要 API key、不联网）
 
 ```bash
 python -m pytest miniagent -q
 ```
 
-### 看两个离线 demo
+### 看三个离线 demo
 
 ```bash
 python -m miniagent.multiagent.parallel_demo   # 并行编排：时间条会重叠，加速比 ≈3
 python -m miniagent.tools.sandbox              # 沙箱：8 组真机输出（拒绝/超时/产图）
+python -m miniagent.mcp.demo                   # MCP 接入：定义 → 挂载 → 调用（起本地子进程）
 ```
 
 ### 跑真 Agent（需要 `DASHSCOPE_API_KEY`，写在项目根 `.env`）
@@ -163,9 +185,9 @@ python -m miniagent.cli replay trace.jsonl
 
 ---
 
-## 测试：255 条，全部离线
+## 测试：271 条，全部离线
 
-不调真实 LLM、不烧 API、不需要 key（用假 LLM + 假执行器）。
+不调真实 LLM、不烧 API、不需要 key（用假 LLM + 假执行器；MCP 那组只起本地子进程）。
 
 | 测试文件 | 覆盖 | 条数 |
 |---|---|---|
@@ -180,6 +202,7 @@ python -m miniagent.cli replay trace.jsonl
 | `test_p14_orchestrator.py` | 串行编排（身份转换 / 分段合并） | 34 |
 | `test_p15_parallel.py` | 并行编排（真并行 / 并发上限 / 部分失败） | 27 |
 | `test_p16_parallel_writes.py` | 并行写安全（冲突须在执前拦 / 快照早于写入） | 20 |
+| `test_p17_mcp.py` | MCP 接入（schema 清洗 / 挂载 / 端到端调用 / 远程报错不炸 / 生命周期） | 16 |
 | `test_vector_store.py` | RAG 原语（分块 / 余弦 / 内存向量库） | 14 |
 | `p02` `p03` `p04` `checkpoint` | 截断 / 摘要 / 记忆 / 存档 | 32 |
 
@@ -189,6 +212,7 @@ python -m miniagent.cli replay trace.jsonl
 - **快照必须早于写入**：断言影子目录里是**旧内容**（存成"改后"版本等于回滚失效）
 - **真并行**：不写死毫秒数，而是同一份计划跑串行/并行两遍比墙钟（避免 flaky）
 - **架构约束**：断言串行与并行两个模块**互相不 import**
+- **MCP 挂载**：真起一个 MCP server 子进程，断言工具真的进了 `tool_map` 且被调通
 
 ---
 
@@ -212,6 +236,7 @@ miniagent/
   memory/               短期记忆 / embedding（离线玩具 + DashScope）/ 向量库
   tools/                SQLite 查询 / 文件 / 轻量沙箱
   multiagent/           成员名册基类 + 串行 handoff + 并行 fan-out
+  mcp/                  MCP 接入（客户端 + 适配器 + 测试用 server）
   tests/                离线验收测试
 ```
 
@@ -223,7 +248,7 @@ miniagent/
 
 - **沙箱不是真隔离**：静态检查拦不住 `__import__("o"+"s")` 这类运行时拼名字的绕过，防的是"手滑"不是"恶意"。
 - **LLM 层是复用的**：不涉及流式、tool-call 协议、方言适配等底层细节。
-- **没有评测 harness**：现在能保证的只是「代码逻辑没坏」（255 条离线测试），**还不能保证「Agent 答得更好了」**。测试测确定性、评测测统计性，这两件事我分得清。
+- **没有评测 harness**：现在能保证的只是「代码逻辑没坏」（271 条离线测试），**还不能保证「Agent 答得更好了」**。测试测确定性、评测测统计性，这两件事我分得清。
 - **多智能体没接预算/追踪**：`budget.py`、`tracer.py` 尚未挂到 `multiagent/` 上，多轮/多并发的成本仍不受控。
 - **并行收益有上限**：瓶颈在 API 延迟与限流；同一个成员默认不并发（防数据竞争）。
 
