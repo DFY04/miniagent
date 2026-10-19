@@ -8,7 +8,12 @@ __pycache__/
 *.db
 *.jsonl
 workspace/
-eval/report.md
+
+# ★ P12 评测（M6）：暂不纳入仓库
+#   原因：代码是 AI 写的、没完全读懂，讲不清的东西放进来是负债。
+#   文件留在本地可以随时跑（python -m miniagent.eval.demo）。
+#   以后自己重写时，删掉下面这两行即可恢复跟踪。
+eval/
 
 # 向量库 / 检索的本地数据（不是代码，不能进仓库）
 **/chroma_db/

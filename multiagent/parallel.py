@@ -86,7 +86,7 @@
         'reject'    （默认）有冲突直接 PlanError，让 planner 重拆。最安全。
         'serialize' 冲突的子任务分批：批内并行、批间串行。冲突少时有用。
 
-    ★ 还有第三种 isololate（每个 worker 独立目录，最后合并），不在这里实现：
+    ★ 还有第三种 isolate（每个 worker 独立目录，最后合并），不在这里实现：
       它需要给每个 worker 配不同的工具（root 指向不同目录），属于使用层的编排，
       不是编排器能替使用者决定的。要隔离就把 tools/sandbox.py 的 cwd 那招搬过来。
 
@@ -103,7 +103,7 @@
         synthesizer_name='synthesizer',
         checkpoint=None,        # 可选的 Checkpoint 实例（不传就不存档）
         checkpoint_step=0,      # 起始步号：第 i 个子任务用 checkpoint_step + i
-        on_write_conflict='reject',   # 'reject' | 'serialize'
+        on_write_conflict='reject',   # 'reject'（默认：冲突即报错）| 'serialize'（冲突的分批）
     )
 
     run(messages) -> Iterator[Message]
@@ -183,6 +183,7 @@ class TaskResult:
     # ↑ 真正被 snapshot 到的文件（相对 Checkpoint root）。
     #   为什么必须记下来：并行模式下工具过程被丢掉了，
     #   如果不记，事后完全不知道"这一轮改了哪些文件"，也就是无法回滚。
+    #   TODO(我)：这里后续可以改进（比如同时记下文件 hash，方便审计）。
     ckpt_error: str = ''         # 存档失败原因（不影响 ok，但必须能看到）
 
     def __repr__(self) -> str:
