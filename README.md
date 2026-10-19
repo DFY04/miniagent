@@ -181,11 +181,17 @@ python -m miniagent.cli --help
 python -m miniagent.cli run "你的问题"
 python -m miniagent.cli run "文档该怎么切分" --rag miniagent/memory/asn.txt --trace trace.jsonl
 python -m miniagent.cli replay trace.jsonl
+
+# 换供应商（key 放 .env：DASHSCOPE_API_KEY / DEEPSEEK_API_KEY）
+python -m miniagent.cli run "你的问题" --provider deepseek
 ```
+
+> 换供应商只换一个 cfg：`build_llm_cfg()` 把 provider 展开成 qwen-agent 认的配置（DeepSeek 走 `model_type='oai'`）。
+> ⚠️ DeepSeek 必须用 `deepseek-chat`——`deepseek-reasoner`(R1) 不支持 function calling，而本项目的 Agent 靠它驱动工具。
 
 ---
 
-## 测试：271 条，全部离线
+## 测试：282 条，全部离线
 
 不调真实 LLM、不烧 API、不需要 key（用假 LLM + 假执行器；MCP 那组只起本地子进程）。
 
@@ -203,6 +209,7 @@ python -m miniagent.cli replay trace.jsonl
 | `test_p15_parallel.py` | 并行编排（真并行 / 并发上限 / 部分失败） | 27 |
 | `test_p16_parallel_writes.py` | 并行写安全（冲突须在执前拦 / 快照早于写入） | 20 |
 | `test_p17_mcp.py` | MCP 接入（schema 清洗 / 挂载 / 端到端调用 / 远程报错不炸 / 生命周期） | 16 |
+| `test_p18_llm_provider.py` | 供应商切换（cfg 形状 / key 来源 / 缺 key 早报错） | 11 |
 | `test_vector_store.py` | RAG 原语（分块 / 余弦 / 内存向量库） | 14 |
 | `p02` `p03` `p04` `checkpoint` | 截断 / 摘要 / 记忆 / 存档 | 32 |
 
@@ -248,7 +255,7 @@ miniagent/
 
 - **沙箱不是真隔离**：静态检查拦不住 `__import__("o"+"s")` 这类运行时拼名字的绕过，防的是"手滑"不是"恶意"。
 - **LLM 层是复用的**：不涉及流式、tool-call 协议、方言适配等底层细节。
-- **没有评测 harness**：现在能保证的只是「代码逻辑没坏」（271 条离线测试），**还不能保证「Agent 答得更好了」**。测试测确定性、评测测统计性，这两件事我分得清。
+- **没有评测 harness**：现在能保证的只是「代码逻辑没坏」（282 条离线测试），**还不能保证「Agent 答得更好了」**。测试测确定性、评测测统计性，这两件事我分得清。
 - **多智能体没接预算/追踪**：`budget.py`、`tracer.py` 尚未挂到 `multiagent/` 上，多轮/多并发的成本仍不受控。
 - **并行收益有上限**：瓶颈在 API 延迟与限流；同一个成员默认不并发（防数据竞争）。
 

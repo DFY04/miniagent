@@ -62,7 +62,14 @@ def build_parser() -> argparse.ArgumentParser:
     # ---------------- run：跑一轮 Agent ----------------
     r = sub.add_parser('run', help='跑一轮 Agent（会真的调模型）')
     r.add_argument('question', help='要问的问题')
-    r.add_argument('--model', default='qwen-max', help='模型名（默认 qwen-max）')
+    r.add_argument('--provider', default='dashscope',
+                   help='模型供应商：dashscope（默认）/ deepseek')
+    r.add_argument('--model', default=None,
+                   help='模型名（默认随 provider：dashscope→qwen-max，deepseek→deepseek-chat）')
+    r.add_argument('--base-url', dest='base_url', default=None, metavar='URL',
+                   help='覆盖模型服务地址（自建 OpenAI 兼容服务时用）')
+    r.add_argument('--api-key-env', dest='api_key_env', default=None, metavar='VAR',
+                   help='从哪个环境变量读 key（默认按 provider 推）')
     r.add_argument('--system', dest='system_message',
                    default='你是一个智能助手。回答时优先依据检索到的参考资料；资料里没有就说不知道。',
                    help='system 人设')
@@ -118,7 +125,7 @@ def cmd_run(args) -> int:
     from miniagent.core.hooks import EventBus, EventType
     from miniagent.core.mem_agent import Agent
     from miniagent.core.message import Message
-    from miniagent.llm import LLMClient
+    from miniagent.llm import LLMClient, build_llm_cfg
     from miniagent.memory.short_term import ShortTermMemory
     from miniagent.runtime.budget import Budget
     from miniagent.runtime.retry import LoopDetector
@@ -138,7 +145,19 @@ def cmd_run(args) -> int:
         tracer.attach(bus)
 
     # ---- 模型 ----
-    llm = LLMClient({'model': args.model})
+    # ★ 换供应商只换 cfg：'dashscope'（默认）或 'deepseek'（OpenAI 兼容）。
+    #   key 从 .env 读：DASHSCOPE_API_KEY / DEEPSEEK_API_KEY。
+    try:
+        llm_cfg = build_llm_cfg(args.model, args.provider,
+                                base_url=args.base_url,
+                                api_key_env=args.api_key_env)
+    except ValueError as exc:
+        print(f'[配置错误] {exc}', file=sys.stderr)
+        return 1
+    if args.verbose:
+        print(f'    [配置] provider={args.provider}  model={llm_cfg["model"]}  '
+              f'server={llm_cfg["model_server"]}')
+    llm = LLMClient(llm_cfg)
 
     # ---- 短期记忆（把 llm 传进去，超预算时能做摘要压缩）----
     mem = ShortTermMemory(max_tokens=8000, llm=llm)
