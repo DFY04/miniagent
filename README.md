@@ -1,5 +1,10 @@
 # MiniAgent
 
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![Tests](https://img.shields.io/badge/tests-314%20passed-brightgreen)
+![Dependencies](https://img.shields.io/badge/runtime%20deps-1-lightgrey)
+![Offline](https://img.shields.io/badge/tests-offline%20only-informational)
+
 > 参照 [qwen-agent](https://github.com/QwenLM/Qwen-Agent) 的架构范式，从零实现 Agent 的**骨架**与**生产级可靠性设施**。
 > 主循环、工具系统、记忆、可观测性、安全、可靠性、多智能体编排全部自己实现；LLM 层是 OpenAI 兼容接口的直连实现（urllib，无第三方 SDK）。
 
@@ -190,7 +195,7 @@ python -m miniagent.cli replay trace.jsonl
 python -m miniagent.cli run "你的问题" --provider deepseek
 ```
 
-> 换供应商只换一个 cfg：`build_llm_cfg()` 把 provider 展开成 qwen-agent 认的配置（DeepSeek 走 `model_type='oai'`）。
+> 换供应商只换一个 provider 参数，`llm.py` 内部把它展开成对应的 OpenAI 兼容端点（DeepSeek 走 `deepseek-chat`）。
 > ⚠️ DeepSeek 必须用 `deepseek-chat`——`deepseek-reasoner`(R1) 不支持 function calling，而本项目的 Agent 靠它驱动工具。
 
 ---
@@ -203,19 +208,23 @@ python -m miniagent.cli run "你的问题" --provider deepseek
 |---|---|---|
 | `test_m1_offline.py` | 主循环 + 工具注册表 | 8 |
 | `test_p01_hooks.py` | 事件总线 | 6 |
+| `test_p02_context_truncate.py` | 上下文截断（最后一条是 tool/function 的边界） | 6 |
 | `test_p05_tracer.py` | 事件落盘 + 回放 | 14 |
-| `test_p06_budget.py` | 预算与 off-by-one 边界 | 16 |
-| `test_p07_retry.py` | 重试 + 死循环检测 | 20 |
+| `test_p06_budget.py` | 预算（输入 + 输出 token）与 off-by-one 边界 | 18 |
+| `test_p07_retry.py` | 重试（含 jitter）+ 死循环检测 | 23 |
 | `test_p09_approval.py` | 审批闸门 | 17 |
-| `test_p10_checkpoint.py` | 存档 / 回滚 | 20 |
-| `test_p11_sandbox.py` | 沙箱三层防护 | 27 |
+| `test_p10_checkpoint.py` | 存档 / 回滚 / 一步多工具 | 24 |
+| `test_p10_file_tools.py` | 文件工具越界防护 | 7 |
+| `test_p11_sandbox.py` | 沙箱三层防护（含绝对路径拦截） | 34 |
 | `test_p14_orchestrator.py` | 串行编排（身份转换 / 分段合并） | 34 |
 | `test_p15_parallel.py` | 并行编排（真并行 / 并发上限 / 部分失败） | 27 |
 | `test_p16_parallel_writes.py` | 并行写安全（冲突须在执前拦 / 快照早于写入） | 20 |
-| `test_p17_mcp.py` | MCP 接入（schema 清洗 / 挂载 / 端到端调用 / 远程报错不炸 / 生命周期） | 16 |
+| `test_p17_mcp.py` | MCP 接入（schema 清洗 / 挂载 / 端到端调用 / 生命周期） | 16 |
 | `test_p18_llm_provider.py` | 供应商切换（cfg 形状 / key 来源 / 缺 key 早报错） | 11 |
 | `test_vector_store.py` | RAG 原语（分块 / 余弦 / 内存向量库） | 14 |
-| `p02` `p03` `p04` `checkpoint` | 截断 / 摘要 / 记忆 / 存档 | 32 |
+| `test_docs_hygiene.py` | 文档卫生（禁止遗留备课痕迹） | 3 |
+| `p02` `p03` `p04` `checkpoint` 内置 | 截断 / 摘要 / 记忆 / 存档 | 32 |
+| **合计** | | **314** |
 
 其中几条是"看起来对但其实错"的回归测试，比如：
 
@@ -225,6 +234,20 @@ python -m miniagent.cli run "你的问题" --provider deepseek
 - **架构约束**：断言串行与并行两个模块**互相不 import**
 - **MCP 挂载**：真起一个 MCP server 子进程，断言工具真的进了 `tool_map` 且被调通
 
+### 复盘时补的 7 个洞（都带回归测试）
+
+写完第一版后按生产标准复盘，发现 7 处真问题。这些是**先修再写测试钉住**的，不是设计时就想到的：
+
+| 洞 | 修法 | 回归测试 |
+|---|---|---|
+| 沙箱只读 `open()` 可读任意绝对路径（能把 `.env` 读进上下文） | 禁绝对路径 + 限定工作目录内，非字面量 fail closed | `test_p11_sandbox` +7 |
+| 预算只统计输出 token（长上下文的输入完全没算） | 订阅 `LLM_START` 记输入 prompt，输入 + 输出一起入账 | `test_p06_budget` +2 |
+| 上下文截断假设最后一条是 user（实际常是 function） | 从后往前找真 user，工具调用尾巴整段保留 | `test_p02_context_truncate` +6 |
+| `file_tools` 的 `root / 绝对路径` 会吞掉 root（能读写目录外） | resolve 后 `is_relative_to(root)` 校验 | `test_p10_file_tools` +7 |
+| checkpoint 用 `tool_calls.step` 单列主键，一步多工具会 IntegrityError | 改 `(step, seq)` 复合主键，旧库自动迁移 | `test_p10_checkpoint` +4 |
+| 指数退避没有 jitter（多 worker 会同步重试） | 加可注入 jitter，等待落在 `[wait, 2×wait)` | `test_p07_retry` +3 |
+| docstring 里残留备课痕迹 | 清理 + 静态检查钉住 | `test_docs_hygiene` +3 |
+
 ---
 
 ## 评测：两层 harness（P12 端到端 + 外部轨迹 harness）
@@ -232,7 +255,7 @@ python -m miniagent.cli run "你的问题" --provider deepseek
 | 层 | 在哪 | 测什么 |
 |---|---|---|
 | 端到端 | `eval/harness.py`（P12） | 最后答案对不对：accuracy / 步数 / token / p50·p95 / 失败分类 |
-| 轨迹（组件+工具调用） | **外部**：`E:\agent-study\course-eval-ft` 的 lab1 harness | 工具选对没、参数对不对、顺序对不对、有没有多余调用；pass@k / pass^k |
+| 轨迹（组件 + 工具调用） | 规划中（需要外部 task-level harness） | 工具选对没、参数对不对、顺序对不对、有没有多余调用；pass@k / pass^k |
 
 为什么两层都要：端到端只告诉你「答错了」，轨迹层才告诉你「错在选工具、抽参数还是排序」。
 同一批任务过两层，才能把「碰巧答对」和「真的会用工具」分开。
@@ -284,7 +307,7 @@ miniagent/
 - 少量模块直接采用了课程提供的参考实现：`runtime/tracer.py` 与 `runtime/tracer_reference.py` 内容一致
 
 **自己实现的部分**
-- 除上述参考实现外，各模块代码均逐模块实现（git 历史 39 次提交 / 12 天，可见「写练习稿 → 失败 → 参考 → 再实现」的过程）
+- 除上述参考实现外，各模块代码均逐模块实现（git 历史 40 次提交 / 13 天，可见「写练习稿 → 失败 → 参考 → 再实现」的过程）
 - 自己做的改造与踩坑：
   - **主循环**：显式 `max_steps` 参数化、工具异常转 observation 回灌模型
   - **并行编排**（`multiagent/parallel.py`，806 行）：写冲突在派活前检测、动手前快照，执行器可注入
@@ -325,7 +348,7 @@ miniagent/
 | M3 | Tracer（落盘 + 回放） | ✅ |
 | M4 | 预算 / 重试 / 死循环检测 | ✅ |
 | M5 | 审批闸门 + checkpoint/回滚 + 沙箱 | ✅ |
-| M6 | 评测 harness | ✅（P12 端到端 + 已接 lab1 轨迹级，见「评测」一节） |
+| M6 | 评测 harness | ✅（端到端已实现；轨迹层待接） |
 | M7 | 多智能体编排（串行 + 并行） | ✅ |
 
 ---
@@ -337,6 +360,6 @@ miniagent/
 | `core/tool.py` `TOOL_REGISTRY` / `@tool` | `tools/base.py` `TOOL_REGISTRY` / `register_tool` |
 | `core/agent.py` `Agent.run()` | `agents/fncall_agent.py` `FnCallAgent._run` |
 | `core/message.py` `Message` | `llm/schema.py` `Message` |
-| `llm.py` `LLMClient` | `llm/base.py` `BaseChatModel`（直接复用） |
+| `llm.py` `LLMClient` | `llm/base.py` `BaseChatModel`（本项目改为 OpenAI 兼容接口直连，不依赖 SDK） |
 | `tools/sandbox.py` `PythonSandbox` | `tools/code_interpreter.py`（真容器） |
 | `multiagent/hub.py` `MultiAgentHub` | `multi_agent_hub.py` `MultiAgentHub`（本项目把身份转换也提到了基类） |
