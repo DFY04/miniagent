@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import pytest
 import sys
 import time
 
@@ -264,6 +265,7 @@ def test_accepts_json_string_params():
 
 def test_plotting_produces_png():
     """★ 验收：正常画图代码能产出 PNG。"""
+    pytest.importorskip('matplotlib', reason='产图测试需要 matplotlib，未安装则跳过')
     out = json.loads(PythonSandbox().call({'code': PLOT_CODE}))
     assert out['status'] == 'ok', out
     assert len(out['images']) == 1, f'应该正好一张图: {out["images"]}'
@@ -274,6 +276,7 @@ def test_plotting_produces_png():
 
 def test_produced_file_is_real_png():
     """产出物真是 PNG（看魔数），不是改了个后缀的空文件。"""
+    pytest.importorskip('matplotlib', reason='产图测试需要 matplotlib，未安装则跳过')
     out = json.loads(PythonSandbox().call({'code': PLOT_CODE}))
     with open(out['images'][0], 'rb') as fp:
         assert fp.read(8) == b'\x89PNG\r\n\x1a\n', '不是合法 PNG'
@@ -281,6 +284,7 @@ def test_produced_file_is_real_png():
 
 def test_output_stays_inside_sandbox():
     """★ 目录隔离：产出物落在沙箱目录，不污染项目目录。"""
+    pytest.importorskip('matplotlib', reason='产图测试需要 matplotlib，未安装则跳过')
     out = json.loads(PythonSandbox().call({'code': PLOT_CODE}))
     image = out['images'][0]
     assert not image.startswith(REPO_ROOT), f'产出物漏进了项目目录: {image}'
@@ -289,6 +293,7 @@ def test_output_stays_inside_sandbox():
 
 def test_plot_works_even_without_agg(monkeypatch=None):
     """环境变量 MPLBACKEND=Agg 兜底：LLM 忘了 use('Agg') 也能出图。"""
+    pytest.importorskip('matplotlib', reason='产图测试需要 matplotlib，未安装则跳过')
     code = (
         'import matplotlib.pyplot as plt\n'
         'plt.plot([1, 2], [1, 2])\n'
