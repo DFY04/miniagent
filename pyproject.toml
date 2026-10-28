@@ -1,0 +1,17 @@
+[project]
+name = "miniagent"
+version = "0.1.0"
+description = "参照 Qwen-Agent 架构范式从零实现的 Agent harness：主循环 / 工具系统 / 记忆 / 多智能体 / MCP / 沙箱 / checkpoint / 评测"
+requires-python = ">=3.10"
+dependencies = [
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+mcp = ["mcp>=1.0"]
+rag = ["chromadb>=0.4", "dashscope>=1.20"]
+
+[tool.pytest.ini_options]
+testpaths = ["miniagent"]
+addopts = "-q"

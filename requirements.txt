@@ -1,0 +1,10 @@
+# 核心运行 + 测试所需（离线可跑）
+pytest>=8.0
+python-dotenv>=1.0
+
+# 可选：MCP 接入的测试会用
+# mcp>=1.0
+
+# 可选：真实 RAG（DashScope + Chroma）才需要
+# chromadb>=0.4
+# dashscope>=1.20

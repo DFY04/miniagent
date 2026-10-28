@@ -1,0 +1,22 @@
+{"ts": 1791713293.9060192, "type": "run_start", "trace_id": "880fac4c", "data": {}}
+{"ts": 1791713293.9060192, "type": "rag_start", "trace_id": "880fac4c", "data": {"query": "丁凤阳是哪里人"}}
+{"ts": 1791713294.028676, "type": "rag_end", "trace_id": "880fac4c", "data": {"query": "丁凤阳是哪里人", "hits": 2}}
+{"ts": 1791713294.0316753, "type": "llm_start", "trace_id": "880fac4c", "data": {"step": 0}}
+{"ts": 1791713294.7076375, "type": "llm_end", "trace_id": "880fac4c", "data": {"reply": {"role": "assistant", "content": "丁凤阳是河北承德人。"}}, "latency_ms": 676.0}
+{"ts": 1791713294.7076375, "type": "run_end", "trace_id": "880fac4c", "data": {"reason": "done"}}
+{"ts": 1791713294.7076375, "type": "run_start", "trace_id": "62fbf4ec", "data": {}}
+{"ts": 1791713294.7076375, "type": "rag_start", "trace_id": "62fbf4ec", "data": {"query": "帮我算一下 12+30 再看看现在几点"}}
+{"ts": 1791713294.790726, "type": "rag_end", "trace_id": "62fbf4ec", "data": {"query": "帮我算一下 12+30 再看看现在几点", "hits": 2}}
+{"ts": 1791713294.790726, "type": "llm_start", "trace_id": "62fbf4ec", "data": {"step": 0}}
+{"ts": 1791713295.9218335, "type": "llm_end", "trace_id": "62fbf4ec", "data": {"reply": {"role": "assistant", "content": "", "function_call": {"name": "now", "arguments": "{}"}}}, "latency_ms": 1131.7}
+{"ts": 1791713295.922838, "type": "tool_start", "trace_id": "62fbf4ec", "data": {"name": "now"}}
+{"ts": 1791713295.922838, "type": "tool_end", "trace_id": "62fbf4ec", "data": {"name": "now", "result": "2026-10-11 18:08:15"}}
+{"ts": 1791713295.922838, "type": "step_end", "trace_id": "62fbf4ec", "data": {"step": 0}}
+{"ts": 1791713295.922838, "type": "llm_start", "trace_id": "62fbf4ec", "data": {"step": 1}}
+{"ts": 1791713296.7631211, "type": "llm_end", "trace_id": "62fbf4ec", "data": {"reply": {"role": "assistant", "content": "", "function_call": {"name": "add", "arguments": "{\"a\": 12, \"b\": 30}"}}}, "latency_ms": 840.4}
+{"ts": 1791713296.7631211, "type": "tool_start", "trace_id": "62fbf4ec", "data": {"name": "add"}}
+{"ts": 1791713296.7631211, "type": "tool_end", "trace_id": "62fbf4ec", "data": {"name": "add", "result": "12 + 30 = 42"}}
+{"ts": 1791713296.7631211, "type": "step_end", "trace_id": "62fbf4ec", "data": {"step": 1}}
+{"ts": 1791713296.7641168, "type": "llm_start", "trace_id": "62fbf4ec", "data": {"step": 2}}
+{"ts": 1791713297.8542552, "type": "llm_end", "trace_id": "62fbf4ec", "data": {"reply": {"role": "assistant", "content": "12加30的结果是42。现在的时间是2026年10月11日18点08分15秒。"}}, "latency_ms": 1090.6}
+{"ts": 1791713297.8542552, "type": "run_end", "trace_id": "62fbf4ec", "data": {"reason": "done"}}

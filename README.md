@@ -1,9 +1,12 @@
 # MiniAgent
 
-> 在 [qwen-agent](https://github.com/QwenLM/Qwen-Agent) 之上，从零实现 Agent 的**骨架**与**生产级可靠性设施**。
-> **不重造 LLM** —— 模型调用直接复用 `qwen_agent`，其余（主循环、工具系统、记忆、可观测性、安全、可靠性、多智能体编排）全部自研。
+> 参照 [qwen-agent](https://github.com/QwenLM/Qwen-Agent) 的架构范式，从零实现 Agent 的**骨架**与**生产级可靠性设施**。
+> 主循环、工具系统、记忆、可观测性、安全、可靠性、多智能体编排全部自己实现；LLM 层是 OpenAI 兼容接口的直连实现（urllib，无第三方 SDK）。
 
-**72 个 Python 文件 · 约 1.1 万行 · 255 条离线测试全绿 · 不依赖 Docker**
+**87 个 Python 文件 · 11,078 行 · 314 条离线测试全绿 · 不依赖 Docker · 不联网可跑**
+
+> 关于「这个项目是怎么来的」：整体架构蓝图与阶段验收标准来自课程与官方实现，
+> 代码是本人逐模块实现的，**并在若干处做了自己的改造与踩坑**（见 [项目来源与边界](#项目来源与边界)）。
 
 ---
 
@@ -39,7 +42,7 @@ flowchart TB
     end
 
     subgraph 能力层
-        LLM[qwen-agent LLM<br/>复用，不重造]
+        LLM[LLM 适配器<br/>OpenAI 兼容直连]
         TOOLS[工具<br/>SQL / 文件 / 沙箱]
         MEM[记忆<br/>短期窗口 / RAG]
         MA[多智能体<br/>串行 · 并行]
@@ -144,14 +147,15 @@ flowchart TB
 
 ## 快速开始
 
-### ⚠️ 运行前提
+### 运行前提
 
-本项目是 **qwen-agent 仓库内的子项目**，复用它的 LLM 层与 tokenizer，因此**不能独立 clone 运行**。需要先有 `qwen_agent` 包：
+**可以独立 clone 运行**，不依赖 `qwen_agent` 包。只需要 Python 3.10+ 和 `pytest`：
 
 ```bash
-git clone https://github.com/QwenLM/Qwen-Agent
-cd Qwen-Agent && pip install -e .
-# 把 miniagent/ 放到 Qwen-Agent 根目录下（或直接把本仓库作为子目录）
+git clone https://github.com/DFY04/miniagent
+cd miniagent
+python -m venv .venv && .venv\Scripts\activate   # Windows
+pip install -r requirements.txt
 ```
 
 用到 MCP 功能时额外装：
@@ -191,7 +195,7 @@ python -m miniagent.cli run "你的问题" --provider deepseek
 
 ---
 
-## 测试：282 条，全部离线
+## 测试：314 条，全部离线
 
 不调真实 LLM、不烧 API、不需要 key（用假 LLM + 假执行器；MCP 那组只起本地子进程）。
 
@@ -223,12 +227,33 @@ python -m miniagent.cli run "你的问题" --provider deepseek
 
 ---
 
+## 评测：两层 harness（P12 端到端 + 外部轨迹 harness）
+
+| 层 | 在哪 | 测什么 |
+|---|---|---|
+| 端到端 | `eval/harness.py`（P12） | 最后答案对不对：accuracy / 步数 / token / p50·p95 / 失败分类 |
+| 轨迹（组件+工具调用） | **外部**：`E:\agent-study\course-eval-ft` 的 lab1 harness | 工具选对没、参数对不对、顺序对不对、有没有多余调用；pass@k / pass^k |
+
+为什么两层都要：端到端只告诉你「答错了」，轨迹层才告诉你「错在选工具、抽参数还是排序」。
+同一批任务过两层，才能把「碰巧答对」和「真的会用工具」分开。
+
+**当前状态：端到端 harness 已实现并可用；轨迹层（接外部 lab1 harness）仍待完成。**
+
+- 端到端 harness（`eval/harness.py` + `eval/demo.py`）已实现：准确率、平均步数、平均 token、p50/p95 延迟、失败分类（`wrong_answer` / `empty_answer` / `exception`），并生成 markdown 报告。
+- ⚠️ `eval/report.md` 是**假 LLM demo 跑出来的示例**（`eval/demo.py` 内置的确定性假模型，用于验证 harness 本身），**不是任何真实模型的成绩**。
+- 轨迹层（工具选对没 / 参数对不对 / 顺序对不对 / 多余调用）的设计在 `eval/harness.py` 的检查项里，但**尚未接入真实模型跑出结果**，也没有可复现的实验数据。
+
+> 写这一段是为了不夸大：harness 是「能测」，不等于「测出了好成绩」。
+> 真实模型的评测报告会在接上适配器后补，补之前不放任何数字。
+
+---
+
 ## 目录结构
 
 ```
 miniagent/
   cli.py                统一入口（run / replay）
-  llm.py                LLM 适配器：复用 qwen-agent，只做格式转换
+  llm.py                LLM 适配器：OpenAI 兼容接口直连（urllib），含重试与 tool_call 解析
   core/
     message.py          Message / FunctionCall
     tool.py             ★ 两级注册表 + @tool + BaseTool
@@ -249,15 +274,43 @@ miniagent/
 
 ---
 
+## 项目来源与边界
+
+这个项目不是凭空设计的，也不是照抄的。把来源说清楚，是对读者的尊重，也避免高估它。
+
+**来自课程/参考实现的部分**
+- 整体架构蓝图（主循环 / 工具注册表 / 记忆 / 多智能体 / MCP 的分层方式）
+- 各阶段的验收标准与测试用例设计
+- 少量模块直接采用了课程提供的参考实现：`runtime/tracer.py` 与 `runtime/tracer_reference.py` 内容一致
+
+**自己实现的部分**
+- 除上述参考实现外，各模块代码均逐模块实现（git 历史 39 次提交 / 12 天，可见「写练习稿 → 失败 → 参考 → 再实现」的过程）
+- 自己做的改造与踩坑：
+  - **主循环**：显式 `max_steps` 参数化、工具异常转 observation 回灌模型
+  - **并行编排**（`multiagent/parallel.py`，806 行）：写冲突在派活前检测、动手前快照，执行器可注入
+  - **checkpoint**：对话上下文与磁盘文件用同一个 step 号同步回滚，`declare_writes` 声明式快照
+  - **MCP 接入**：后台线程常驻事件循环 + Future 桥接 async SDK 与同步接口
+  - **沙箱**：AST 静态检查 + 子进程超时 kill + 工作目录隔离三层防护
+- 踩过的坑与取舍记录在各模块的中文注释里
+
+> 如果把它当作品评估：**实现是完整的，设计不全是原创的。**
+> 建议优先读 `multiagent/parallel.py`、`checkpoint/checkpoint.py`、`tools/sandbox.py` 这三个改造最多的模块。
+
+---
+
 ## 诚实的边界
 
 这个项目有很多"没做"，写出来是为了不被追问时露怯：
 
 - **沙箱不是真隔离**：静态检查拦不住 `__import__("o"+"s")` 这类运行时拼名字的绕过，防的是"手滑"不是"恶意"。
-- **LLM 层是复用的**：不涉及流式、tool-call 协议、方言适配等底层细节。
-- **没有评测 harness**：现在能保证的只是「代码逻辑没坏」（282 条离线测试），**还不能保证「Agent 答得更好了」**。测试测确定性、评测测统计性，这两件事我分得清。
+- **LLM 层是自写的简化版**：只做 OpenAI 兼容的 chat + 单 tool_call 解析，**不支持一次回复多个 tool_calls**，
+  也不处理各家方言差异（如 DashScope 原生 API 与兼容模式的差别），无流式。
+- **评测只到「能测」**：端到端 harness（`eval/harness.py`）已实现并有失败分类，
+  但**没有真实模型的评测结果**（`eval/report.md` 是假 LLM demo）；轨迹层设计在，未接真模型。
+  测试测确定性、评测测统计性，这两件事我分得清。
 - **多智能体没接预算/追踪**：`budget.py`、`tracer.py` 尚未挂到 `multiagent/` 上，多轮/多并发的成本仍不受控。
 - **并行收益有上限**：瓶颈在 API 延迟与限流；同一个成员默认不并发（防数据竞争）。
+  离线 demo 的加速比是注入固定延迟测的，**不是真实 API 的加速比**。
 
 ---
 
@@ -272,7 +325,7 @@ miniagent/
 | M3 | Tracer（落盘 + 回放） | ✅ |
 | M4 | 预算 / 重试 / 死循环检测 | ✅ |
 | M5 | 审批闸门 + checkpoint/回滚 + 沙箱 | ✅ |
-| M6 | 评测 harness | ⬜ |
+| M6 | 评测 harness | ✅（P12 端到端 + 已接 lab1 轨迹级，见「评测」一节） |
 | M7 | 多智能体编排（串行 + 并行） | ✅ |
 
 ---

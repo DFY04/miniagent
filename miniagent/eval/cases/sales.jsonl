@@ -1,0 +1,10 @@
+{"input": "2023 年销售额最高的城市是哪个？", "expected": "杭州", "scorer": "contains"}
+{"input": "2023 年销售额最低的城市是哪个？", "expected": "上海", "scorer": "contains"}
+{"input": "2024 年销售额最高的城市是哪个？", "expected": "杭州", "scorer": "contains"}
+{"input": "2024 年销售额最低的城市是哪个？", "expected": "北京", "scorer": "contains"}
+{"input": "2023 年所有城市的总销售额是多少？", "expected": 3100, "scorer": "numeric"}
+{"input": "2024 年所有城市的总销售额是多少？", "expected": 3650, "scorer": "numeric"}
+{"input": "数据库里一共有几个不同的城市？", "expected": 3, "scorer": "numeric"}
+{"input": "杭州两年的总销售额是多少？", "expected": 2700, "scorer": "numeric"}
+{"input": "北京两年的总销售额是多少？", "expected": 2050, "scorer": "numeric"}
+{"input": "这个数据库记录了哪几年的销售数据？", "expected": "2023,2024", "scorer": "set_match"}

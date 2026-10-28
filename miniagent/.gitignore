@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# 运行时产物
+*.db
+workspace/
+*.sqlite3
+
+# 运行时 trace（JSONL 里有对话内容，不进仓库）
+# 注意：eval/cases、examples 下的样例数据要保留，见下方例外规则
+tracer_file.txt
+*.trace.jsonl
+
+# 向量库 / 检索的本地数据（不是代码）
+**/chroma_db/
+**/chroma_probe/
+**/qdrant_local_data/
+chroma.sqlite3
+
+# 编辑器
+.idea/
+.vscode/
+
+# 环境变量（绝不上传）
+.env
+*.env
