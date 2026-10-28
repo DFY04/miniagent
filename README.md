@@ -1,9 +1,11 @@
 # MiniAgent
 
+[![tests](https://github.com/DFY04/miniagent/actions/workflows/tests.yml/badge.svg)](https://github.com/DFY04/miniagent/actions/workflows/tests.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Tests](https://img.shields.io/badge/tests-314%20passed-brightgreen)
 ![Dependencies](https://img.shields.io/badge/runtime%20deps-1-lightgrey)
 ![Offline](https://img.shields.io/badge/tests-offline%20only-informational)
+![License](https://img.shields.io/badge/license-MIT-green)
 
 > 参照 [qwen-agent](https://github.com/QwenLM/Qwen-Agent) 的架构范式，从零实现 Agent 的**骨架**与**生产级可靠性设施**。
 > 主循环、工具系统、记忆、可观测性、安全、可靠性、多智能体编排全部自己实现；LLM 层是 OpenAI 兼容接口的直连实现（urllib，无第三方 SDK）。
